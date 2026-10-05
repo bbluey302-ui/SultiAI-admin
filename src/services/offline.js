@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { BASE_URL } from './api';
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from '../lib/supabase';
 
 const CACHE_PREFIX = 'sultiai_cache_';
 const QUEUE_KEY = 'sultiai_sync_queue';
@@ -8,14 +8,27 @@ const LESSON_CACHE_KEY = CACHE_PREFIX + 'lessons';
 const VOCAB_CACHE_KEY = CACHE_PREFIX + 'vocabulary';
 const LEXICON_CACHE_KEY = CACHE_PREFIX + 'lexicon';
 
-const HEALTH_URL = `${BASE_URL}/api/health`;
+// Reachability is now checked against Supabase rather than the removed Express
+// health route. `/auth/v1/health` is the lightest authenticated endpoint
+// GoTrue exposes: it returns `{}` with a 200 and touches no table, so it does
+// not depend on RLS or on the `public.users` row existing yet.
+const HEALTH_URL = `${SUPABASE_URL}/auth/v1/health`;
 
 export const offline = {
   async isOnline() {
+    if (!HEALTH_URL || HEALTH_URL.includes('undefined')) {
+      // No Supabase URL configured — assume online so the app is not
+      // needlessly locked into offline mode by a misconfiguration.
+      return true;
+    }
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 3000);
-      const res = await fetch(HEALTH_URL, { method: 'HEAD', signal: controller.signal });
+      const res = await fetch(HEALTH_URL, {
+        method: 'GET',
+        signal: controller.signal,
+        headers: SUPABASE_ANON_KEY ? { apikey: SUPABASE_ANON_KEY } : undefined,
+      });
       clearTimeout(timeout);
       return res.ok;
     } catch {

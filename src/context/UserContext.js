@@ -1,9 +1,34 @@
 import React, { createContext, useState, useEffect, useCallback, useContext, useRef } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase, normalizeUser } from '../lib/supabase';
-import { api, BASE_URL } from '../services/api';
+import { api } from '../services/api';
 
 const UserContext = createContext(null);
+
+/**
+ * Pulls `role` off the caller's own `public.users` row.
+ *
+ * This replaces `POST /api/auth/sync-supabase`, which existed only to create
+ * that row. Creation is now a Postgres trigger (`handle_new_auth_user()`), so
+ * by the time we get here the row already exists and the only thing left to
+ * read is the role. RLS restricts the select to the caller's own row, so no
+ * filter is needed and adding one would break (the client never learns its
+ * integer PK).
+ *
+ * Fire-and-forget by design: a role lookup failure must never block sign-in.
+ */
+async function refreshRoleFromDb(authUserId) {
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select('role')
+      .eq('supabase_id', authUserId)
+      .maybeSingle();
+    if (error || !data) return null;
+    return data.role || 'user';
+  } catch {
+    return null;
+  }
+}
 
 export function UserProvider({ children }) {
   const [user, setUser] = useState(null);
@@ -22,6 +47,13 @@ export function UserProvider({ children }) {
         setSession(currentSession);
         setUser(normalizeUser(currentSession?.user));
         setLoading(false);
+        if (currentSession?.user) {
+          refreshRoleFromDb(currentSession.user.id).then((role) => {
+            if (!cancelled && role) {
+              setUser((prev) => (prev ? { ...prev, role } : prev));
+            }
+          });
+        }
       }
     }).catch((err) => {
       console.warn('[UserContext] getSession error:', err.message);
@@ -33,33 +65,13 @@ export function UserProvider({ children }) {
         setSession(currentSession);
         setUser(normalizeUser(currentSession?.user));
 
-        // Sync user to local DB on sign-in / token refresh / OAuth callback
+        // Pick up the role on sign-in / token refresh / OAuth callback.
         if (currentSession?.user) {
-          const u = currentSession.user;
-          const API_URL = BASE_URL;
-          fetch(`${API_URL}/api/auth/sync-supabase`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              supabaseId: u.id,
-              email: u.email,
-              name: u.user_metadata?.full_name || u.user_metadata?.fullname || '',
-              native_language: u.user_metadata?.native_language,
-              target_language: u.user_metadata?.target_language,
-            }),
-          })
-            .then(res => res.json())
-            .then(data => {
-              if (data?.success && data?.data?.user) {
-                const serverUser = data.data.user;
-                setUser(prev => prev ? {
-                  ...prev,
-                  role: serverUser.role || prev.role || 'user',
-                  permissions: serverUser.permissions || prev.permissions || [],
-                } : prev);
-              }
-            })
-            .catch(() => {}); // fire-and-forget, don't block UI
+          refreshRoleFromDb(currentSession.user.id).then((role) => {
+            if (!cancelled && role) {
+              setUser((prev) => (prev ? { ...prev, role } : prev));
+            }
+          });
         }
       }
     });
@@ -122,24 +134,12 @@ export function UserProvider({ children }) {
       setSession(data.session);
       setUser(normalizeUser(data.user));
 
-      // Sync user to local SQLite DB (in case they only existed in Supabase before)
+      // The `public.users` row is created by the `handle_new_auth_user()`
+      // trigger at signup time, so there is nothing to sync here — only the
+      // role to read back.
       if (data.user) {
-        try {
-          const API_URL = BASE_URL;
-          await fetch(`${API_URL}/api/auth/sync-supabase`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              supabaseId: data.user.id,
-              email: data.user.email || email,
-              name: data.user.user_metadata?.full_name || data.user.user_metadata?.fullname || '',
-              native_language: data.user.user_metadata?.native_language,
-              target_language: data.user.user_metadata?.target_language,
-            }),
-          });
-        } catch (syncErr) {
-          console.warn('[UserContext] Failed to sync user on sign-in:', syncErr.message);
-        }
+        const role = await refreshRoleFromDb(data.user.id);
+        if (role) setUser((prev) => (prev ? { ...prev, role } : prev));
       }
 
       return { success: true };
@@ -167,63 +167,28 @@ export function UserProvider({ children }) {
 
       if (error) {
         // Handle email confirmation errors gracefully
-        if (error.message?.includes('confirmation email') || error.message?.includes('email not confirmed')) {
+        if (
+          error.message?.includes('confirmation email') ||
+          error.message?.includes('email not confirmed')
+        ) {
           return {
             success: false,
-            error: 'Account created but email confirmation is pending.\n\nPlease disable email confirmation in your Supabase dashboard:\nAuthentication → Providers → Email → Confirm email → OFF\n\nOr set up an email provider (Resend, SendGrid, etc.).',
+            error:
+              'Account created but email confirmation is pending.\n\n' +
+              `Open the confirmation link we emailed to ${email}, then sign in.`,
           };
         }
         throw error;
       }
 
-      // Sync user to local SQLite DB so admin can see/manage them
-      if (data.user) {
-        try {
-          const API_URL = BASE_URL;
-          await fetch(`${API_URL}/api/auth/sync-supabase`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              supabaseId: data.user.id,
-              email: data.user.email || email,
-              name: name,
-              native_language: native_language,
-              target_language: target_language,
-            }),
-          });
-        } catch (syncErr) {
-          // Sync endpoint not available — user still works in Supabase, just not in admin
-          console.warn('[UserContext] Failed to sync user to local DB:', syncErr.message);
-        }
-      }
-
-      // User created but needs email confirmation
+      // Email confirmation is enabled on the project (mailer_autoconfirm is
+      // false), so a successful signUp with no session means "check your inbox".
+      //
+      // The old code tried `POST /api/auth/confirm-user` here to auto-confirm
+      // for development. That endpoint is gone, and bypassing confirmation is
+      // not something the client can do anyway — it would mean shipping the
+      // service-role key in the APK.
       if (data.user && !data.session) {
-        // Try to auto-confirm the user via server endpoint (for development)
-        try {
-          const API_URL = BASE_URL;
-          const confirmRes = await fetch(`${API_URL}/api/auth/confirm-user`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, userId: data.user.id }),
-          });
-          if (confirmRes.ok) {
-            // Re-attempt sign in after auto-confirmation
-            const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-              email,
-              password,
-            });
-            if (!signInError && signInData?.session) {
-              setSession(signInData.session);
-              setUser(normalizeUser(signInData.user));
-              return { success: true };
-            }
-          }
-        } catch (confirmErr) {
-          // Auto-confirm endpoint not available — that's fine
-          console.warn('[UserContext] Auto-confirm not available:', confirmErr.message);
-        }
-
         return { success: true, message: 'Please check your email to confirm your account.' };
       }
 

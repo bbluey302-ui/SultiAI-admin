@@ -19,39 +19,39 @@ const EXAMPLE_TEMPLATES = [
 export default function SentenceCompletion({ onBack }) {
   const { colors, onPrimary } = useTheme();
   const [loading, setLoading] = useState(false);
-  const [robertaAvailable, setRobertaAvailable] = useState(false);
+  const [aiAvailable, setAiAvailable] = useState(false);
   const [inputText, setInputText] = useState('');
   const [completions, setCompletions] = useState(null);
   const [selectedCompletion, setSelectedCompletion] = useState(null);
   const [customMode, setCustomMode] = useState(false);
 
-  const checkRobertaStatus = async () => {
+  const checkAiAvailability = async () => {
     try {
-      const status = await api.robertaStatus();
-      setRobertaAvailable(status.available);
-      if (!status.available) {
+      const status = await api.aiAvailable();
+      setAiAvailable(!!status?.available);
+      if (!status?.available) {
         Alert.alert(
-          'RoBERTa Not Available',
-          'The RoBERTa Tagalog model is not available. Please ensure the Python AI service is running.',
+          'Sentence Completion Unavailable',
+          'The AI service is not configured, so sentences cannot be completed yet. Please try again later.',
           [{ text: 'OK', onPress: onBack }]
         );
       }
     } catch (error) {
-      console.error('Failed to check RoBERTa status:', error);
-      setRobertaAvailable(false);
+      console.error('Failed to check AI availability:', error);
+      setAiAvailable(false);
     }
   };
 
   useEffect(() => {
-    // setRobertaAvailable runs after `await`, so it cannot cascade renders on
+    // setAiAvailable runs after `await`, so it cannot cascade renders on
     // mount; the Compiler rule cannot prove that boundary.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    checkRobertaStatus();
+    checkAiAvailability();
   }, []);
 
   const completeSentence = async () => {
-    if (!robertaAvailable) {
-      Alert.alert('Service Unavailable', 'RoBERTa Tagalog model is not available');
+    if (!aiAvailable) {
+      Alert.alert('Service Unavailable', 'The AI service is not available right now.');
       return;
     }
 
@@ -69,12 +69,12 @@ export default function SentenceCompletion({ onBack }) {
 
     setLoading(true);
     try {
-      const result = await api.robertaSentenceCompletion(inputText);
+      const result = await api.completeSentence(inputText);
       setCompletions(result);
       setSelectedCompletion(result.best_completion);
     } catch (error) {
       console.error('Failed to complete sentence:', error);
-      Alert.alert('Error', 'Failed to complete sentence');
+      Alert.alert('Error', error.message || 'Failed to complete sentence');
     } finally {
       setLoading(false);
     }
@@ -90,14 +90,14 @@ export default function SentenceCompletion({ onBack }) {
     setSelectedCompletion(null);
   };
 
-  if (!robertaAvailable) {
+  if (!aiAvailable) {
     return (
       <View style={[styles.container, { backgroundColor: colors.background }]}>
         <View style={styles.errorContainer}>
           <Ionicons name="alert-circle" size={48} color={colors.error} />
-          <Text style={[styles.errorTitle, { color: colors.text }]}>RoBERTa Not Available</Text>
+          <Text style={[styles.errorTitle, { color: colors.text }]}>Sentence Completion Unavailable</Text>
           <Text style={[styles.errorMessage, { color: colors.textSecondary }]}>
-            The RoBERTa Tagalog model is not available. Please ensure the Python AI service is running.
+            The AI service is not configured, so sentences cannot be completed yet. Please try again later.
           </Text>
           <TouchableOpacity
             style={[styles.backButton, { borderColor: colors.primary }]}

@@ -1,9 +1,20 @@
 import * as Speech from 'expo-speech';
 import { Platform } from 'react-native';
-import { api, BASE_URL } from '../services/api';
+import { CHARACTER_VOICES, characterLocale, resolveCharacterKey } from '../lib/characters';
 import { sanitizeForSpeech } from './speech';
 
 const IS_WEB = Platform.OS === 'web';
+
+// Speech used to be synthesized server-side and fetched as an MP3 from
+// `${BASE_URL}/audio/tts/*.mp3`. Every cloud provider that route used is gone:
+// Edge TTS now 403s non-residential IPs, Deepgram's `POST /v1/text-to-speech`
+// 404s for this key, and OpenRouter's `deepgram/flux-tts:free` model has been
+// delisted. `expo-speech` is now the primary path rather than the fallback, so
+// there is no HTTP fetch, no MP3 and no server URL left in this file.
+//
+// The web decodeAudioData helpers below still exist: expo-speech on web routes
+// through the browser's SpeechSynthesis API, and `playTtsUrl` stays exported
+// for any caller that still has a real audio URL (e.g. user-recorded audio).
 
 let player = null;
 let listener = null;
@@ -150,14 +161,24 @@ export function stopTTS() {
   Speech.stop();
 }
 
-function speakFallback(clean, { language, rate, onStart, onDone, onError }) {
-  notifyWeb('speech synthesis fallback');
-  console.log('[TTS] Using expo-speech fallback for:', clean.substring(0, 30));
+/**
+ * On-device synthesis via `expo-speech`. This is the only TTS path now, so the
+ * old "fallback" framing is gone — but the name is kept because the watchdog
+ * timer below and every call site were written around it.
+ *
+ * `language` wins when the caller knows the target language (WhisperAIScreen
+ * passes `fil`, PronunciationScreen passes `ceb`). Otherwise the character's own
+ * locale is used, so picking "Lola" in Settings actually sounds different.
+ */
+function speakFallback(clean, { language, rate, pitch, voice, onStart, onDone, onError }) {
+  const locale = language || characterLocale(voice);
+  notifyWeb('speech synthesis: ' + locale);
+  console.log('[TTS] Synthesizing on device with locale', locale, 'for:', clean.substring(0, 30));
   fallbackGuardTimer = setTimeout(
     () => {
       fallbackGuardTimer = null;
-      notifyWeb('speech fallback timed out');
-      console.log('[TTS] Speech fallback timed out');
+      notifyWeb('speech timed out');
+      console.log('[TTS] Speech timed out');
       if (onDone) onDone();
     },
     Math.min(20000, 2500 + clean.length * 110)
@@ -167,19 +188,20 @@ function speakFallback(clean, { language, rate, onStart, onDone, onError }) {
       clearTimeout(fallbackGuardTimer);
       fallbackGuardTimer = null;
     }
-    console.log('[TTS] Speech fallback completed');
+    console.log('[TTS] Speech completed');
     if (onDone) onDone();
   };
   Speech.speak(clean, {
-    language: language || 'ceb',
+    language: locale,
     rate,
+    pitch,
     onStart: () => {
       console.log('[AUDIO] speech-synthesis started');
       if (onStart) onStart();
     },
     onDone: finishFb,
     onError: (error) => {
-      console.error('[TTS] Speech fallback error:', error);
+      console.error('[TTS] Speech error:', error);
       if (fallbackGuardTimer) {
         clearTimeout(fallbackGuardTimer);
         fallbackGuardTimer = null;
@@ -307,103 +329,6 @@ function playWebDecoded(audioUri, token, { done, failed, started }, retryCount =
     });
 }
 
-function retryViaBlob(fullUrl, token, { done, failed }) {
-  // Play through decodeAudioData on the gesture-unlocked AudioContext ? the
-  // SAME pipeline the Test Sound beep proved audible in this exact browser.
-  // HTML5 <audio> elements are silently muted on Android Chrome here.
-  playWebDecoded(fullUrl, token, { done, failed });
-  return;
-  if (typeof window === 'undefined') {
-    failed();
-    return;
-  }
-  const audio = new window.Audio();
-  audio.preload = 'auto';
-  const cleanup = () => {
-    if (webAudio === audio) webAudio = null;
-    audio.onended = null;
-    audio.onerror = null;
-    audio.removeAttribute('src');
-    audio.load();
-  };
-  audio.onended = () => {
-    if (token !== currentToken) return;
-    cleanup();
-    done();
-  };
-  audio.onerror = () => {
-    console.warn('[TTS] Blob audio load error');
-    notifyWeb('blob retry failed to load');
-    cleanup();
-    failed();
-  };
-  fetch(fullUrl)
-    .then((r) => {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      notifyWeb('blob retry fetched ' + r.status);
-      return r.blob();
-    })
-    .then((blob) => {
-      if (token !== currentToken) return;
-      const url = URL.createObjectURL(new Blob([blob], { type: blob.type || 'audio/mpeg' }));
-      audio.src = url;
-      webAudio = audio;
-      notifyWeb('blob retry playing');
-      audio.play().catch((e) => {
-        console.warn('[TTS] Blob play blocked:', e.message);
-        notifyWeb('blob play blocked: ' + e.message);
-        cleanup();
-        failed();
-      });
-    })
-    .catch((e) => {
-      console.warn('[TTS] Blob fetch failed:', e.message);
-      notifyWeb('blob fetch failed: ' + e.message);
-      failed();
-    });
-}
-
-function playWebAudio(audioUri, token, finish, clean, language, rate, started) {
-  console.log('[TTS] playWebAudio called with:', audioUri);
-  playWebDecoded(audioUri, token, {
-    done: finish,
-    started,
-    failed: () =>
-      speakFallback(clean, { language, rate, onStart: started, onDone: finish, onError: finish }),
-  }, 0);
-  return;
-  if (webAudio) {
-    webAudio.pause();
-    webAudio = null;
-  }
-  const audio = new window.Audio(audioUri);
-  webAudio = audio;
-
-  audio.onended = () => {
-    if (token !== currentToken) return;
-    webAudio = null;
-    notifyWeb('playback finished');
-    finish();
-  };
-
-  audio.onerror = (e) => {
-    console.warn('[TTS] Web audio error:', e);
-    notifyWeb('web audio error');
-    if (token !== currentToken) return;
-    webAudio = null;
-    speakFallback(clean, { language, rate, onDone: finish, onError: finish });
-  };
-
-  notifyWeb('playing web audio: ' + audioUri);
-  audio.play().catch((e) => {
-    console.warn('[TTS] Web audio autoplay blocked:', e.message);
-    notifyWeb('autoplay blocked: ' + e.message);
-    if (token !== currentToken) return;
-    webAudio = null;
-    speakFallback(clean, { language, rate, onDone: finish, onError: finish });
-  });
-}
-
 function playSourceOnNative(uri, { onStart, onDone, onError } = {}) {
   console.log('[TTS] === playSourceOnNative CALLED ===');
   console.log('[TTS] URI:', uri);
@@ -489,17 +414,33 @@ function playSourceOnNative(uri, { onStart, onDone, onError } = {}) {
   }
 }
 
+/**
+ * Plays audio that already exists as a URL or data/blob URI.
+ *
+ * The server used to hand back relative paths like `/audio/tts/<hash>.mp3`,
+ * which were resolved against `BASE_URL`. There is no server now, so relative
+ * paths cannot be resolved and are rejected outright rather than being turned
+ * into a broken URL that would silently never play.
+ *
+ * Still used for real audio the app owns: recorded clips and any future
+ * Supabase Storage URL. `VoiceModeScreen` calls this with `tts_url`, which is
+ * now always null, and falls back to `speakTTS`.
+ */
 export function playTtsUrl(url, { onStart, onDone, onError } = {}) {
   if (!url) {
     if (onError) onError();
     return;
   }
+  const isAbsolute = /^https?:/i.test(url) || url.startsWith('blob:') || url.startsWith('data:');
+  if (!isAbsolute) {
+    console.warn('[TTS] Ignoring relative audio URL, there is no media server:', url);
+    if (onError) onError();
+    return;
+  }
   const token = ++currentToken;
-  let fullUrl = url;
 
   console.log('[TTS] playTtsUrl called with:', url);
   console.log('[TTS] IS_WEB:', IS_WEB);
-  console.log('[TTS] BASE_URL:', BASE_URL);
 
   if (IS_WEB) {
     if (webAudio) {
@@ -508,17 +449,8 @@ export function playTtsUrl(url, { onStart, onDone, onError } = {}) {
       webAudio = null;
     }
 
-    // For web, the server returns URLs like /audio/tts/filename.mp3
-    // We need to construct the full URL based on the BASE_URL
-    if (!url.startsWith('http') && !url.startsWith('blob:') && !url.startsWith('data:')) {
-      // Remove leading slash if present to avoid double slashes
-      const cleanPath = url.startsWith('/') ? url.substring(1) : url;
-      fullUrl = `${BASE_URL}/${cleanPath}`;
-      console.log('[TTS] Constructed web audio URL:', fullUrl);
-    }
-
     // Use decodeAudioData directly for better browser compatibility
-    playWebDecoded(fullUrl, token, {
+    playWebDecoded(url, token, {
       started: () => {
         console.log('[TTS] playTtsUrl playback started');
         if (onStart) onStart();
@@ -528,19 +460,14 @@ export function playTtsUrl(url, { onStart, onDone, onError } = {}) {
         if (onDone) onDone();
       },
       failed: () => {
-        console.error('[TTS] playTtsUrl failed, trying fallback');
+        console.error('[TTS] playTtsUrl failed to play');
         if (onError) onError();
       },
     }, 0);
     return;
   }
 
-  // For native platforms, use the original URL construction
-  if (!url.startsWith('http') && !url.startsWith('blob:') && !url.startsWith('data:')) {
-    fullUrl = `${BASE_URL}${url}`;
-  }
-
-  playSourceOnNative(fullUrl, {
+  playSourceOnNative(url, {
     onStart: () => {
       console.log('[TTS] playTtsUrl playback started');
       if (onStart) onStart();
@@ -550,7 +477,10 @@ export function playTtsUrl(url, { onStart, onDone, onError } = {}) {
   });
 }
 
-export function speakTTS(text, { voice = 'blessica', rate = 0.9, language, onStart, onDone, onError } = {}) {
+export function speakTTS(
+  text,
+  { voice = 'blessica', rate, pitch, language, onStart, onDone, onError } = {}
+) {
   const clean = sanitizeForSpeech(text);
   if (!clean) {
     console.log('[TTS] No text to speak after sanitization');
@@ -564,7 +494,6 @@ export function speakTTS(text, { voice = 'blessica', rate = 0.9, language, onSta
   console.log('[TTS] language:', language);
   console.log('[TTS] muted:', muted);
   console.log('[TTS] platform:', IS_WEB ? 'web' : 'native');
-  console.log('[TTS] BASE_URL:', BASE_URL);
 
   const token = ++currentToken;
   let finished = false;
@@ -588,84 +517,22 @@ export function speakTTS(text, { voice = 'blessica', rate = 0.9, language, onSta
     return;
   }
 
-  console.log('[TTS] Calling API ttsSynthesize...');
-  api
-    .ttsSynthesize(clean, voice, rate, undefined, language)
-    .then((result) => {
-      console.log('[TTS] === API RESPONSE RECEIVED ===');
-      console.log('[TTS] full result:', JSON.stringify(result));
-      const url = result && result.url;
-      if (!url) {
-        console.warn('[TTS] Server returned no URL, falling back to expo-speech');
-        speakFallback(clean, {
-          language,
-          rate,
-          onStart: () => {
-            if (onStart) onStart();
-          },
-          onDone: finish,
-          onError: finish,
-        });
-        return;
-      }
-      if (token !== currentToken) return;
-      // Construct proper audio URL for web vs native
-      let audioUri;
-      if (IS_WEB) {
-        // For web, the server returns /audio/tts/filename.mp3
-        const cleanPath = url.startsWith('/') ? url.substring(1) : url;
-        audioUri = `${BASE_URL}/${cleanPath}`;
-      } else {
-        audioUri = `${BASE_URL}${url}`;
-      }
-      console.log('[TTS] response status: url=', url, 'size bytes=', result.size_bytes ?? result.audio_size ?? 'n/a');
-      console.log('[TTS] constructed audio URI:', audioUri);
-      console.log('[AUDIO] loading:', audioUri);
+  // The rate/pitch the caller asked for wins; when a caller passes neither, the
+  // character's own defaults apply so picking a character in Settings is
+  // audible rather than cosmetic.
+  const character = CHARACTER_VOICES[resolveCharacterKey(voice)];
 
-      if (IS_WEB) {
-        playWebAudio(audioUri, token, finish, clean, language, rate, () => {
-          console.log('[AUDIO] playback started');
-          if (onStart) onStart();
-        });
-        return;
-      }
-
-      playSourceOnNative(audioUri, {
-        onStart: () => {
-          console.log('[AUDIO] playback started');
-          if (onStart) onStart();
-        },
-        onDone: finish,
-        onError: () => {
-          console.warn('[TTS] Native playback failed, falling back to expo-speech');
-          speakFallback(clean, {
-            language,
-            rate,
-            onStart: () => {
-              if (onStart) onStart();
-            },
-            onDone: finish,
-            onError: finish,
-          });
-        },
-      });
-    })
-    .catch((err) => {
-      console.error('[TTS] === API REQUEST FAILED ===');
-      console.error('[TTS] error:', err?.message || err);
-      console.error('[TTS] full error:', err);
-      console.warn('[TTS] Server TTS failed, falling back to expo-speech');
-      if (token !== currentToken) return;
-      speakFallback(clean, {
-        language,
-        rate,
-        onStart: () => {
-          if (onStart) onStart();
-        },
-        onDone: finish,
-        onError: finish,
-      });
-    });
+  speakFallback(clean, {
+    language,
+    rate: rate ?? character.rate,
+    pitch: pitch ?? character.pitch,
+    voice,
+    onStart: () => {
+      if (onStart) onStart();
+    },
+    onDone: () => finish(),
+    onError: () => finish(),
+  });
 }
 
 export function speakTTSPromise(text, opts = {}) {

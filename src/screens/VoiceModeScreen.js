@@ -34,7 +34,7 @@ import XpToast from '../components/voice/XpToast';
 import { UserMessage, SultiMessage, TypingIndicator } from '../components/voice/MessageBubble';
 import { useVoicePalette } from '../components/voice/palette';
 import { useGame } from '../context/GameContext';
-import { api, BASE_URL } from '../services/api';
+import { api } from '../services/api';
 import {
   speakTTS,
   stopTTS,
@@ -101,8 +101,7 @@ export default function VoiceModeScreen({ navigation }) {
   const voice = useVoicePalette();
   const styles = useMemo(() => createStyles(voice), [voice]);
   useEffect(() => {
-    console.log('[VoiceMode] mounted (VAD+greeting+HTML5 player)');
-    console.log('[VoiceMode] BASE_URL:', typeof BASE_URL !== 'undefined' ? BASE_URL : 'n/a');
+    console.log('[VoiceMode] mounted (VAD+greeting+on-device playback)');
     console.log(
       '[VoiceMode] Browser:',
       typeof navigator !== 'undefined' ? navigator.userAgent || 'unknown' : 'none'
@@ -1597,7 +1596,7 @@ function TtsDebugOverlay({ styles }) {
   }, []);
   
   return (
-    <View style={styles.ttsDebugHost} pointerEvents="none">
+    <View style={[styles.ttsDebugHost, { pointerEvents: 'none' }]}>
       <Text style={styles.ttsDebugText} numberOfLines={3}>
         {msg} | Audio: {audioState}
       </Text>
@@ -1623,7 +1622,7 @@ function SultiStage({ state, size, avatarSize, amplitude, onPress, styles }) {
   return (
     <View style={[styles.stage, { width: size * 1.6, height: size * 1.6 }]}>
       <VoiceOrb state={state} size={size} amplitude={amplitude} onPress={onPress} />
-      <View pointerEvents="none" style={styles.stageAvatar}>
+      <View style={[styles.stageAvatar, { pointerEvents: 'none' }]}>
         <SultiTalkingAvatar size={avatarSize} mood={mood} />
       </View>
     </View>

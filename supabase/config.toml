@@ -222,7 +222,9 @@ enable_signup = true
 # addresses. If disabled, only the new email is required to confirm.
 double_confirm_changes = true
 # If enabled, users need to confirm their email address before signing in.
-enable_confirmations = false
+# Cloud already runs with this on; local dev used to disable it, which made the
+# dev experience diverge from production.
+enable_confirmations = true
 # If enabled, users will need to reauthenticate or have logged in recently to change their password.
 secure_password_change = false
 # Controls the minimum amount of time that must pass before sending another signup confirmation or password reset email.
@@ -411,3 +413,18 @@ enabled = true
 # declarative_schema_path = "./schemas"
 # JSON string passed through to pg-delta SQL formatting.
 # format_options = "{\"keywordCase\":\"upper\",\"indent\":2,\"maxWidth\":80,\"commaStyle\":\"trailing\"}"
+
+# Edge Functions.
+#
+# Both functions authenticate with `withSupabase({ auth: 'user' })`, so the
+# platform-level JWT check stays enabled and the caller's token is what scopes
+# every database read and write. Neither uses a publishable/secret key or
+# `auth: 'none'`, so `verify_jwt = false` is deliberately NOT set here.
+#
+# Set the provider secret once, before the first deploy:
+#   supabase secrets set GROQ_API_KEY=... GROQ_MODEL=... GROQ_VISION_MODEL=...
+[functions.ai]
+verify_jwt = true
+
+[functions.agent-token]
+verify_jwt = true

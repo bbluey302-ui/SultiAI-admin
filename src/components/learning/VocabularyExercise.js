@@ -8,7 +8,7 @@ import { readableOnGradient } from '../../theme/moduleColors';
 export default function VocabularyExercise({ onBack }) {
   const { colors, onPrimary } = useTheme();
   const [loading, setLoading] = useState(false);
-  const [robertaAvailable, setRobertaAvailable] = useState(false);
+  const [aiAvailable, setAiAvailable] = useState(false);
   const [currentExercise, setCurrentExercise] = useState(null);
   const [userAnswer, setUserAnswer] = useState('');
   const [showResult, setShowResult] = useState(false);
@@ -22,45 +22,45 @@ export default function VocabularyExercise({ onBack }) {
     return colors.error;
   };
 
-  const checkRobertaStatus = async () => {
+  const checkAiAvailability = async () => {
     try {
-      const status = await api.robertaStatus();
-      setRobertaAvailable(status.available);
-      if (!status.available) {
+      const status = await api.aiAvailable();
+      setAiAvailable(!!status?.available);
+      if (!status?.available) {
         Alert.alert(
-          'RoBERTa Not Available',
-          'The RoBERTa Tagalog model is not available. Please ensure the Python AI service is running.',
+          'Exercises Unavailable',
+          'The AI service is not configured, so exercises cannot be generated yet. Please try again later.',
           [{ text: 'OK', onPress: onBack }]
         );
       }
     } catch (error) {
-      console.error('Failed to check RoBERTa status:', error);
-      setRobertaAvailable(false);
+      console.error('Failed to check AI availability:', error);
+      setAiAvailable(false);
     }
   };
 
   useEffect(() => {
-    // setRobertaAvailable runs after `await`, so it cannot cascade renders on
+    // setAiAvailable runs after `await`, so it cannot cascade renders on
     // mount; the Compiler rule cannot prove that boundary.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    checkRobertaStatus();
+    checkAiAvailability();
   }, []);
 
   const generateExercise = async () => {
-    if (!robertaAvailable) {
-      Alert.alert('Service Unavailable', 'RoBERTa Tagalog model is not available');
+    if (!aiAvailable) {
+      Alert.alert('Service Unavailable', 'The AI service is not available right now.');
       return;
     }
 
     setLoading(true);
     try {
-      const exercise = await api.robertaVocabularyExercise(difficulty);
+      const exercise = await api.generateVocabExercise(difficulty);
       setCurrentExercise(exercise);
       setUserAnswer('');
       setShowResult(false);
     } catch (error) {
       console.error('Failed to generate exercise:', error);
-      Alert.alert('Error', 'Failed to generate vocabulary exercise');
+      Alert.alert('Error', error.message || 'Failed to generate vocabulary exercise');
     } finally {
       setLoading(false);
     }
@@ -84,14 +84,14 @@ export default function VocabularyExercise({ onBack }) {
     generateExercise();
   };
 
-  if (!robertaAvailable) {
+  if (!aiAvailable) {
     return (
       <View style={[styles.container, { backgroundColor: colors.background }]}>
         <View style={styles.errorContainer}>
           <Ionicons name="alert-circle" size={48} color={colors.error} />
-          <Text style={[styles.errorTitle, { color: colors.text }]}>RoBERTa Not Available</Text>
+          <Text style={[styles.errorTitle, { color: colors.text }]}>Exercises Unavailable</Text>
           <Text style={[styles.errorMessage, { color: colors.textSecondary }]}>
-            The RoBERTa Tagalog model is not available. Please ensure the Python AI service is running.
+            The AI service is not configured, so exercises cannot be generated yet. Please try again later.
           </Text>
           <TouchableOpacity
             style={[styles.backButton, { borderColor: colors.primary }]}
@@ -162,7 +162,7 @@ export default function VocabularyExercise({ onBack }) {
               Tagalog Vocabulary Practice
             </Text>
             <Text style={[styles.startDescription, { color: colors.textSecondary }]}>
-              Practice your Tagalog vocabulary with fill-in-the-blank exercises powered by RoBERTa Tagalog Base.
+              Practice your Tagalog vocabulary with fill-in-the-blank exercises powered by SultiAI.
             </Text>
             <TouchableOpacity
               style={[styles.startButton, { backgroundColor: colors.success }]}
@@ -376,10 +376,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 24,
     marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
+    boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
     elevation: 3,
   },
   instruction: {
