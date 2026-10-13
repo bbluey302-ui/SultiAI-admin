@@ -25,7 +25,7 @@
   },
   "dependencies": {
     "@sentry/nextjs": "^10.73.0",
-    "@sentry/node": "^10.73.0",
+    "@sentry/node": "^11.6.0",
     "@supabase/server": "^1.4.1",
     "@supabase/supabase-js": "^2.112.4",
     "@upstash/ratelimit": "^2.0.8",
