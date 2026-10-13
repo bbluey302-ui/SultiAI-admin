@@ -29,19 +29,48 @@ export default function LearningProgressCard() {
 
   // Declared before the effect that calls it, so the reference is never in a
   // temporal dead zone (a const arrow above the effect was TDZ-fragile).
+  //
+  // `getWeeklyProgress()` returns an ARRAY of `{ date, xp }` - the contract
+  // LearnScreen and ProfileScreen both read. This card was storing that array
+  // straight into `analytics` and then reading object fields off it, so
+  // `wordsLearned`, `pronunciationAvg` and `weeklyXp` were all `undefined` and
+  // the weekly chart - guarded by `analytics?.dailyXp` - never rendered at all.
+  // The values are assembled here from the sources that actually own them.
   async function loadAnalytics() {
     try {
-      const data = await api.getWeeklyProgress();
-      setAnalytics(data);
-    } catch {
-      // Offline: show real game-context data only, no fabricated analytics
+      const [days, pronunciation, learning] = await Promise.all([
+        api.getWeeklyProgress(),
+        api.getPronunciationStats(),
+        api.getLearningAnalytics(),
+      ]);
+
+      const week = Array.isArray(days) ? days : [];
+      const dailyXp = week.map((day, i) => ({
+        date: day?.date,
+        xp: Math.max(0, Number(day?.xp) || 0),
+        isToday: i === week.length - 1,
+      }));
+
+      setAnalytics({
+        // `wordsLearned` has no dedicated counter - there is no per-word progress
+        // table. Completed modules is the closest real measure of words learned,
+        // so the label is reported from `learning_progress` rather than invented.
+        wordsLearned: Math.max(0, Number(learning?.modules_completed) || 0),
+        wordsLearnedFromModules: true,
+        pronunciationAvg: Math.max(0, Number(pronunciation?.avgAccuracy) || 0),
+        weeklyXp: dailyXp.reduce((sum, day) => sum + day.xp, 0),
+        dailyXp,
+        streak,
+      });
+    } catch (e) {
+      // Offline: show real game-context data only, no fabricated analytics.
+      console.warn('[LearningProgressCard] Failed to load analytics:', e.message);
       setAnalytics({
         wordsLearned: 0,
         pronunciationAvg: 0,
         weeklyXp: 0,
-        weeklyGoal: Math.max(1, dailyGoal * 7),
-        sessionsThisWeek: 0,
-        streak: streak,
+        dailyXp: [],
+        streak,
       });
     } finally {
       setLoading(false);
@@ -179,7 +208,9 @@ export default function LearningProgressCard() {
               <Ionicons name="book" size={20} color={colors.accent} />
             </View>
             <Text style={[styles.statValue, { color: colors.text }]}>{Math.max(0, Number(analytics?.wordsLearned) || 0)}</Text>
-            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Words Learned</Text>
+            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>
+              {analytics?.wordsLearnedFromModules ? 'Modules Completed' : 'Words Learned'}
+            </Text>
           </View>
 
           <View style={styles.statCard}>

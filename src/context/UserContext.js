@@ -1,5 +1,6 @@
 import React, { createContext, useState, useEffect, useCallback, useContext, useRef } from 'react';
 import { supabase, normalizeUser } from '../lib/supabase';
+import { invalidateIdentity } from '../lib/data';
 import { api } from '../services/api';
 
 const UserContext = createContext(null);
@@ -38,12 +39,30 @@ export function UserProvider({ children }) {
   const [level, setLevel] = useState(null);
   const mountedRef = useRef(true);
 
+  // `src/lib/data.js` caches the caller's integer `user_id` for the life of the
+  // session, because the client cannot derive it from the JWT and re-reading it
+  // on every insert is a wasted round trip. That cache is only correct while the
+  // same identity is signed in, so it has to be dropped whenever the auth
+  // identity changes - otherwise a second person signing in on a shared device
+  // inherits the previous user's primary key.
+  //
+  // `invalidateIdentity()` existed for this but nothing ever called it, so the
+  // contract in its docstring was never enforced.
+  const lastAuthIdRef = useRef(null);
+  const syncIdentity = useCallback((nextAuthId) => {
+    if (lastAuthIdRef.current !== nextAuthId) {
+      invalidateIdentity();
+      lastAuthIdRef.current = nextAuthId;
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     mountedRef.current = true;
 
     supabase.auth.getSession().then(({ data: { session: currentSession } }) => {
       if (!cancelled) {
+        syncIdentity(currentSession?.user?.id ?? null);
         setSession(currentSession);
         setUser(normalizeUser(currentSession?.user));
         setLoading(false);
@@ -62,6 +81,7 @@ export function UserProvider({ children }) {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, currentSession) => {
       if (!cancelled) {
+        syncIdentity(currentSession?.user?.id ?? null);
         setSession(currentSession);
         setUser(normalizeUser(currentSession?.user));
 
@@ -81,7 +101,7 @@ export function UserProvider({ children }) {
       mountedRef.current = false;
       subscription?.unsubscribe();
     };
-  }, []);
+  }, [syncIdentity]);
 
   const signInWithGoogle = useCallback(async () => {
     setAuthError(null);
@@ -133,6 +153,7 @@ export function UserProvider({ children }) {
 
       setSession(data.session);
       setUser(normalizeUser(data.user));
+      syncIdentity(data.user?.id ?? null);
 
       // The `public.users` row is created by the `handle_new_auth_user()`
       // trigger at signup time, so there is nothing to sync here — only the
@@ -148,7 +169,7 @@ export function UserProvider({ children }) {
       setAuthError(message);
       return { success: false, error: message };
     }
-  }, []);
+  }, [syncIdentity]);
 
   const signUp = useCallback(async (email, password, name, native_language, target_language) => {
     setAuthError(null);
@@ -194,13 +215,14 @@ export function UserProvider({ children }) {
 
       setSession(data.session);
       setUser(normalizeUser(data.user));
+      syncIdentity(data.user?.id ?? null);
       return { success: true };
     } catch (err) {
       const message = err?.message || 'Sign up failed. Please try again.';
       setAuthError(message);
       return { success: false, error: message };
     }
-  }, []);
+  }, [syncIdentity]);
 
   const signOut = useCallback(async () => {
     try {
@@ -209,11 +231,15 @@ export function UserProvider({ children }) {
     } catch (err) {
       console.warn('[UserContext] Sign out error:', err.message);
     } finally {
+      // Drop the cached integer primary key. RLS would reject the next user's
+      // writes with a policy error, but that surfaces as a confusing failure
+      // rather than a fresh identity resolution.
+      syncIdentity(null);
       setSession(null);
       setUser(null);
       setAuthError(null);
     }
-  }, []);
+  }, [syncIdentity]);
 
   const refreshProfile = useCallback(async () => {
     try {

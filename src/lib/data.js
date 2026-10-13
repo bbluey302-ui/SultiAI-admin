@@ -162,6 +162,51 @@ export async function upsertRow(tableName, row, onConflict, { ignoreDuplicates =
   return data[0] ?? null;
 }
 
+/**
+ * Calls a Postgres function through PostgREST.
+ *
+ * Used for the work that must not happen on the client. `award_xp` (see
+ * `supabase/migrations/20261007130000_award_xp_and_tighten_grants.sql`) takes a
+ * `SELECT ... FOR UPDATE` and an atomic increment that no sequence of PostgREST
+ * calls can express, and it resolves the caller from `auth.uid()` rather than
+ * trusting a user id supplied by the device.
+ *
+ * The caller must be signed in. The function is `SECURITY DEFINER` and raises
+ * `42501` when `get_user_id()` is NULL, which is the right answer but a poor
+ * message, so it is checked here first.
+ */
+export async function rpc(fnName, params = {}) {
+  await getAuthId();
+  return unwrap(await supabase.rpc(fnName, params));
+}
+
+/**
+ * Uploads a binary object into a private bucket and returns its storage path.
+ *
+ * Private, not public: `createSignedUrl` is the only way to read an object back,
+ * so the anon key alone cannot resolve somebody else's recording.
+ *
+ * The caller is responsible for the path. For `verification-audio` the policy in
+ * `20261007150000_verification_audio_bucket.sql` requires the first path segment
+ * to be the caller's own `users.user_id`, and resolves the caller from
+ * `auth.uid()` rather than trusting the segment.
+ */
+export async function uploadObject(bucket, path, body, contentType) {
+  await getAuthId();
+  // Everything except the final segment is the caller's namespace. Stripping
+  // separators here means a path built from user input cannot climb out of it,
+  // which the storage policy alone would not catch.
+  const safePath = path.split('/').filter((s) => s && s !== '.' && s !== '..').join('/');
+  if (!safePath) throw new Error('A storage path is required.');
+
+  const { error } = await supabase.storage.from(bucket).upload(safePath, body, {
+    contentType,
+    upsert: false,
+  });
+  if (error) throw new Error(`Could not upload the recording: ${error.message}`);
+  return safePath;
+}
+
 // ---------------------------------------------------------------------------
 // Edge Function invocation
 // ---------------------------------------------------------------------------

@@ -229,7 +229,7 @@ SELECT
   p.translation            AS english,
   u.fullname               AS author_name,
   COALESCE(v.verified, false) AS author_verified,
-  COALESCE(u.is_native_speaker, false) AS is_native,
+  (COALESCE(u.is_native_speaker, 0) <> 0) AS is_native,
   p.created_at,
   p.likes_count            AS likes,
   COALESCE(cc.comment_count, 0) AS comments,

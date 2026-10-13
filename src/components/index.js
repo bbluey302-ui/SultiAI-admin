@@ -33,3 +33,4 @@ export { default as AuroraBackground } from './AuroraBackground';
 export { default as WordReveal } from './WordReveal';
 export { default as PremiumCard } from './PremiumCard';
 export { default as LevelUpCelebration } from './LevelUpCelebration';
+export { default as RoleGuard, PermissionGate } from './RoleGuard';

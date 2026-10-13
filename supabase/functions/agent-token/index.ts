@@ -20,11 +20,14 @@
 //                src/services/deepgramAgent.native.js is a hard stub, so even a
 //                working token would have nothing to connect with.
 //
-// So in practice both providers are unavailable, the app uses the Groq batch
-// path (push-to-talk: Whisper STT -> LLM -> on-device expo-speech), and this
-// function reports that honestly instead of pretending. When a provider key is
-// fixed, `action: 'status'` flips to `realtime: true` and the existing client
-// code reconnects with no further changes.
+// So in practice both providers are unavailable and the app uses the Groq batch
+// path (push-to-talk: Whisper STT -> LLM -> on-device expo-speech). `status`
+// now PROBES both providers and caches the result for 10 minutes instead of
+// inferring availability from the presence of an env var - a key that is set
+// but unusable previously produced `realtime: true`, which sent the client down
+// a realtime path that could not possibly connect. When a provider key is
+// fixed, the next `action: 'status'` flips to `realtime: true` on its own and
+// the existing client code reconnects with no further changes.
 
 import { withSupabase } from 'npm:@supabase/server@1.9.1';
 import { fetchWithRetry } from '../_shared/groq.ts';
@@ -155,6 +158,30 @@ async function getRealtimeClientSecret(): Promise<RealtimeClientSecret> {
   return { value: data.value, expires_at: data.expires_at, model: XAI_VOICE_MODEL };
 }
 
+/**
+ * Same reasoning as `probeXai`: a key that is present but missing the Agent
+ * scope answers 403 "Insufficient permissions.", so `configured` alone would
+ * advertise a live agent that cannot connect. Cached for the same TTL - the
+ * probe mints a genuine access token.
+ */
+const DEEPGRAM_PROBE_TTL_MS = 10 * 60 * 1000;
+let deepgramProbe: { at: number; ok: boolean; detail: string } | null = null;
+
+async function probeDeepgram(): Promise<{ ok: boolean; detail: string }> {
+  if (!isDeepgramConfigured()) return { ok: false, detail: 'DEEPGRAM_API_KEY not set' };
+
+  const now = Date.now();
+  if (deepgramProbe && now - deepgramProbe.at < DEEPGRAM_PROBE_TTL_MS) return deepgramProbe;
+
+  try {
+    await mintDeepgramAccessToken(300);
+    deepgramProbe = { at: now, ok: true, detail: '' };
+  } catch (err: any) {
+    deepgramProbe = { at: now, ok: false, detail: err?.message || String(err) };
+  }
+  return deepgramProbe;
+}
+
 // ---------------------------------------------------------------------------
 // Actions
 // ---------------------------------------------------------------------------
@@ -164,24 +191,62 @@ const PUSH_TO_TALK_MESSAGE =
   'Groq Whisper for speech recognition, Groq for the reply, and on-device ' +
   'speech synthesis.';
 
+/**
+ * xAI availability is probed for real rather than inferred from the presence of
+ * XAI_API_KEY.
+ *
+ * With the key set but the team out of credits, `client_secrets` answers 403
+ * "used all available credits or reached its monthly spending limit". Reporting
+ * `realtime: true` on the strength of a non-empty env var sent the client down
+ * the realtime path and then failed the connection, which reads as "voice is
+ * broken" rather than "voice is on the fallback and working".
+ *
+ * The probe mints a real short-lived secret, so the result is cached briefly to
+ * keep a status poll from minting a secret per request.
+ */
+const XAI_PROBE_TTL_MS = 10 * 60 * 1000;
+let xaiProbe: { at: number; ok: boolean; detail: string } | null = null;
+
+async function probeXai(): Promise<{ ok: boolean; detail: string }> {
+  if (!isXaiConfigured()) return { ok: false, detail: 'XAI_API_KEY not set' };
+
+  const now = Date.now();
+  if (xaiProbe && now - xaiProbe.at < XAI_PROBE_TTL_MS) return xaiProbe;
+
+  try {
+    await getRealtimeClientSecret();
+    xaiProbe = { at: now, ok: true, detail: '' };
+  } catch (err: any) {
+    xaiProbe = { at: now, ok: false, detail: err?.message || String(err) };
+  }
+  return xaiProbe;
+}
+
 async function handleStatus() {
+  const [xai, deepgram] = await Promise.all([probeXai(), probeDeepgram()]);
+
+  const mode = xai.ok ? 'realtime' : deepgram.ok ? 'deepgram_agent' : 'push_to_talk';
+
+  const notes: string[] = [];
+  if (!xai.ok) notes.push(`xAI realtime unavailable (${xai.detail})`);
+  if (!deepgram.ok) notes.push(`Deepgram live agent unavailable (${deepgram.detail})`);
+
   return ok({
-    realtime: isXaiConfigured(),
+    realtime: xai.ok,
+    xai: { configured: isXaiConfigured(), available: xai.ok, detail: xai.detail || null },
     deepgram: {
       configured: isDeepgramConfigured(),
+      available: deepgram.ok,
       url: DEEPGRAM_AGENT_URL,
+      detail: deepgram.detail || null,
     },
     local_available: false,
-    mode: isXaiConfigured()
-      ? 'realtime'
-      : isDeepgramConfigured()
-        ? 'deepgram_agent'
-        : 'push_to_talk',
-    message: isXaiConfigured()
+    mode,
+    message: xai.ok
       ? 'Realtime voice mode enabled'
-      : isDeepgramConfigured()
+      : deepgram.ok
         ? 'Deepgram live voice agent available'
-        : PUSH_TO_TALK_MESSAGE,
+        : [PUSH_TO_TALK_MESSAGE, ...notes].join(' '),
   });
 }
 

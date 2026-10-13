@@ -151,9 +151,34 @@ const heroPillBg = isDark ? 'rgba(248,250,252,0.08)' : 'rgba(15,23,42,0.06)';
   }, [user]);
 
   useEffect(() => {
-    AsyncStorage.getItem('user_avatar_id').then((id) => {
-      if (id) setSelectedAvatarId(id);
-    }).catch(() => {});
+    let cancelled = false;
+
+    // The server is the source of truth now that a selection is persisted.
+    // AsyncStorage is only the offline cache, so it is read as a fallback - if
+    // the fetch fails the picker still shows the last choice made on this
+    // device instead of snapping back to the default.
+    (async () => {
+      let resolved = null;
+      try {
+        const profile = await api.getProfile();
+        if (!cancelled && profile?.avatar_id) resolved = profile.avatar_id;
+      } catch (e) {
+        console.warn('[Profile] Could not load avatar from server:', e.message);
+      }
+
+      if (!resolved) {
+        try {
+          const cached = await AsyncStorage.getItem('user_avatar_id');
+          if (cached) resolved = cached;
+        } catch (e) {
+          console.warn('[Profile] Could not read cached avatar:', e.message);
+        }
+      }
+
+      if (!cancelled && resolved) setSelectedAvatarId(resolved);
+    })();
+
+    return () => { cancelled = true; };
   }, []);
 
   const handleSaveProfile = async () => {
@@ -181,7 +206,22 @@ const heroPillBg = isDark ? 'rgba(248,250,252,0.08)' : 'rgba(15,23,42,0.06)';
     try {
       await AsyncStorage.setItem('user_avatar_id', avatarId);
     } catch (e) {
-      console.warn('[Profile] Failed to save avatar:', e.message);
+      console.warn('[Profile] Failed to cache avatar locally:', e.message);
+    }
+
+    // Persist to the server too. This used to stop at AsyncStorage, which made
+    // the choice device-local: it reset on a new device, on the web build, and
+    // never reached the community feed or the leaderboard, where the avatar is
+    // resolved from `users.avatar_id` rather than from the bundle.
+    //
+    // Queued like the other profile edits so a selection made offline is applied
+    // on reconnect instead of being lost.
+    try {
+      await api.updateProfile({ avatar_id: avatarId });
+      enqueueAction({ endpoint: '/api/user/me', method: 'PUT', payload: { avatar_id: avatarId } });
+      await refreshProfile();
+    } catch (err) {
+      toast.error(err.message || 'Could not save your avatar.');
     }
   };
 

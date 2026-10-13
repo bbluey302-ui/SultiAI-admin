@@ -33,7 +33,17 @@ export function normalizeUser(supabaseUser) {
     country: meta.country || '',
     avatar: meta.avatar_url || meta.avatar || '',
     avatar_id: meta.avatar_id || 'avatar-01',
-    role: meta.role || 'user',
-    permissions: meta.permissions || [],
+    // NOT from user_metadata. That object is caller-supplied at signup, so a
+    // `role` key in it is a claim the user made about themselves, and the app
+    // gates UI on `user.role` (see RoleGuard / UserContext.isAdmin). The real
+    // role is read from `public.users.role` via `refreshRoleFromDb` and
+    // applied on top of this object by UserContext.
+    //
+    // `permissions` is likewise absent: the role/permission catalogue in
+    // `20260904_add_rbac_tables.sql` is admin-only under RLS, so the mobile
+    // client has no server-side source for a per-user permission list yet.
+    // `hasPermission` therefore admits admins only, which fails closed.
+    role: 'user',
+    permissions: [],
   };
 }

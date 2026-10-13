@@ -1,3 +1,5 @@
+import Image from 'next/image';
+
 export type SultiState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'offline';
 
 const stateMeta: Record<SultiState, { label: string; tone: string; ring: string }> = {
@@ -73,7 +75,11 @@ export function SultiOrb({
   );
 }
 
-/** Compact brand lockup for the sidebar and mobile header. */
+/**
+ * The SultiAI brand mark — the original glossy voice-chat icon shared with the
+ * marketing site, so the admin lockup, browser tab and touch icon all read as
+ * one brand instead of the framework's default next.js favicon.
+ */
 export function SultiMark({
   size = 'md',
   className = '',
@@ -82,20 +88,18 @@ export function SultiMark({
   className?: string;
 }) {
   const shell = size === 'sm' ? 'h-7 w-7' : 'h-9 w-9';
-  const core = size === 'sm' ? 'h-2.5 w-2.5' : 'h-3.5 w-3.5';
+  const px = size === 'sm' ? 28 : 36;
 
   return (
     <span className={`relative flex ${shell} shrink-0 items-center justify-center ${className}`}>
-      <span
+      <Image
+        src="/app-icon.png"
+        alt=""
+        width={px}
+        height={px}
         aria-hidden="true"
-        className="absolute inset-0 rounded-full bg-brand/18 blur-lg anim-breathe"
+        className="h-full w-full rounded-[0.7rem] object-contain shadow-lg shadow-brand/30"
       />
-      <span
-        aria-hidden="true"
-        className={`relative flex ${shell} items-center justify-center rounded-full bg-gradient-to-br from-brand via-brand-solid to-brand-deep shadow-lg shadow-brand/30 ring-1 ring-brand/40`}
-      >
-        <span className={`rounded-full bg-bg-deep/70 ${core}`} />
-      </span>
     </span>
   );
 }

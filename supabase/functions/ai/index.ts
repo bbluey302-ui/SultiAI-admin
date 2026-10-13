@@ -698,7 +698,24 @@ Return ONLY a JSON array of the matching ids, using exactly the strings given. R
     : `This is a photo taken inside the "${scenarioId}" scenario. List the objects visible in it.
 Return ONLY a JSON array of short English nouns.`;
 
-  const raw = await groqVision(image, instruction, mimeType);
+  // A scan that finds nothing is a much better outcome for this screen than a
+  // hard failure. Vision is the one task with no working provider on the
+  // project's Groq key (no vision-capable model is reachable), and previously
+  // that surfaced as a 502 that broke the AR scene instead of just showing no
+  // overlay. Report the reason so the screen can explain itself.
+  let raw: string;
+  try {
+    raw = await groqVision(image, instruction, mimeType);
+  } catch (err: any) {
+    const message = err?.message || 'Vision request failed';
+    console.warn(`[ai] ar_analyze unavailable: ${message}`);
+    return ok({
+      objects: [],
+      scenario_id: scenarioId,
+      vision_available: false,
+      note: message,
+    });
+  }
 
   let objects: string[] = [];
   try {
@@ -708,7 +725,7 @@ Return ONLY a JSON array of short English nouns.`;
     objects = [];
   }
 
-  return ok({ objects, scenario_id: scenarioId });
+  return ok({ objects, scenario_id: scenarioId, vision_available: true, note: null });
 }
 
 // ---------------------------------------------------------------------------

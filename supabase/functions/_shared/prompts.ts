@@ -31,8 +31,8 @@ export interface CharacterVoice {
 export const CHARACTER_VOICES: Record<string, CharacterVoice> = {
   blessica: {
     label: 'Blessica',
-    name: 'Blessica (Female, Professional)',
-    description: 'Professional, articulate female voice - the default Sulti instructor',
+    name: 'Blessica (Warm female)',
+    description: 'Friendly and approachable',
     locale: 'fil-PH',
     rate: 1.0,
     pitch: 1.05,
@@ -40,8 +40,8 @@ export const CHARACTER_VOICES: Record<string, CharacterVoice> = {
   },
   angel: {
     label: 'Angel',
-    name: 'Angel (Male, Clear)',
-    description: 'Clear, professional male voice with precise articulation',
+    name: 'Angel (Clear male)',
+    description: 'Patient and supportive',
     locale: 'fil-PH',
     rate: 0.95,
     pitch: 1.0,
@@ -49,8 +49,8 @@ export const CHARACTER_VOICES: Record<string, CharacterVoice> = {
   },
   sultan: {
     label: 'Sultan',
-    name: 'Sultan (Male, Scholarly)',
-    description: 'Scholarly male voice with academic authority and cultural expertise',
+    name: 'Sultan (Authoritative male)',
+    description: 'Confident and culturally grounded',
     locale: 'en-PH',
     rate: 0.9,
     pitch: 0.95,
@@ -58,8 +58,8 @@ export const CHARACTER_VOICES: Record<string, CharacterVoice> = {
   },
   lola: {
     label: 'Lola',
-    name: 'Lola (Elder Female, Wise)',
-    description: 'Wise, experienced female voice with deep cultural knowledge',
+    name: 'Lola (Gentle female)',
+    description: 'Wise and encouraging',
     locale: 'en-PH',
     rate: 0.82,
     pitch: 0.92,
@@ -194,22 +194,25 @@ export const CHARACTER_SYSTEM_PROMPT = `You are "Sulti", a professional AI langu
 - Scenario Practice: When the user selects a role-play topic, guide them through professional communication routines with cultural context.
 - Professional Voice: Always articulate with clarity, precision, and educational expertise, maintaining high standards while facilitating learning.`;
 
+// Each character's personality has to reach the model, not just the picker UI -
+// otherwise the four options are four different TTS timbres saying identical
+// things. These mirror the copy shown in Voice Settings.
 const CHARACTER_VOICE_NAMES: Record<string, { tone: string; style: string }> = {
   blessica: {
-    tone: 'professional, articulate, and supportive with clear enunciation',
-    style: 'structured pedagogical approach with precise linguistic explanations',
+    tone: 'friendly and approachable, welcoming the learner in like a warm conversation partner',
+    style: 'encouraging and conversational, opening with reassurance before adding the new point',
   },
   angel: {
-    tone: 'clear, patient, and methodical with educational expertise',
-    style: 'systematic instruction with comprehensive examples and practice guidance',
+    tone: 'clear, patient, and supportive, never rushing or sounding impatient',
+    style: 'one idea at a time, repeating and rephrasing until the learner is comfortable',
   },
   sultan: {
-    tone: 'authoritative and scholarly with deep cultural knowledge',
-    style: 'academic approach with traditional linguistic principles and cultural context',
+    tone: 'authoritative and confident, grounded in real Filipino culture and tradition',
+    style: 'direct and substantive, giving the cultural reason behind a phrase and not just the phrase',
   },
   lola: {
-    tone: 'wise and nurturing with extensive cultural and linguistic experience',
-    style: 'storytelling approach with traditional expressions and practical wisdom',
+    tone: 'gentle, wise, and encouraging, speaking with the warmth of an elder relative',
+    style: 'reflective and story-like, drawing on traditional expressions and hard-won wisdom',
   },
 };
 

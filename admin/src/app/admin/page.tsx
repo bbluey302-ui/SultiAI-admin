@@ -33,15 +33,30 @@ function pct(part: number, whole: number): number {
   return Math.round((part / whole) * 100);
 }
 
-type Service = { label: string; value: string; ok: boolean };
+type Service = { label: string; value: string; ok: boolean; unknown?: boolean };
 
 function services(health: SystemHealth): Service[] {
   return [
-    { label: 'Database', value: health.db, ok: health.db === 'connected' },
-    { label: 'API server', value: health.api, ok: health.api === 'up' },
-    { label: 'Groq AI', value: health.groq, ok: health.groq === 'configured' },
-    { label: 'Whisper speech', value: health.whisper, ok: health.whisper === 'configured' },
-    { label: 'Storage', value: health.storage, ok: health.storage === 'up' },
+    { label: 'Supabase', value: health.db, ok: health.db === 'connected' },
+    { label: 'Admin API', value: health.api, ok: health.api === 'up' },
+    {
+      label: 'Groq AI',
+      value: health.groq,
+      ok: health.groq === 'configured',
+      unknown: health.groq === 'unknown',
+    },
+    {
+      label: 'Whisper speech',
+      value: health.whisper,
+      ok: health.whisper === 'configured',
+      unknown: health.whisper === 'unknown',
+    },
+    {
+      label: 'Storage',
+      value: health.storage,
+      ok: health.storage === 'up',
+      unknown: health.storage === 'unknown',
+    },
   ];
 }
 
@@ -51,7 +66,10 @@ function services(health: SystemHealth): Service[] {
  * is nominal, so the hero always points somewhere.
  */
 function brief(health: SystemHealth, stats: OverviewStats) {
-  const broken = services(health).filter((s) => !s.ok);
+  const svcs = services(health);
+  const broken = svcs.filter((s) => !s.ok && !s.unknown);
+  const unverified = svcs.filter((s) => s.unknown);
+  const attention = broken.length + unverified.length;
 
   if (health.status === 'down' || broken.length >= 3) {
     return {
@@ -62,13 +80,21 @@ function brief(health: SystemHealth, stats: OverviewStats) {
     };
   }
 
-  if (health.status === 'degraded' || broken.length > 0) {
+  if (health.status === 'degraded' || attention > 0) {
+    const names = [...broken, ...unverified].map((s) => s.label);
+    const onlyUnknown = broken.length === 0;
     return {
       state: 'thinking' as SultiState,
-      headline: `${broken.length} service${broken.length === 1 ? '' : 's'} need attention`,
-      body: `${broken.map((s) => s.label).join(', ')} ${
-        broken.length === 1 ? 'is' : 'are'
-      } not reporting healthy. Everything else is operating normally.`,
+      headline: onlyUnknown
+        ? `${unverified.length} service${unverified.length === 1 ? '' : 's'} not verified`
+        : `${attention} service${attention === 1 ? '' : 's'} need attention`,
+      body: onlyUnknown
+        ? `${names.join(
+            ', '
+          )} cannot be verified from the admin console. The AI Usage page shows the real request volume these providers serve.`
+        : `${names.join(', ')} ${
+            attention === 1 ? 'is' : 'are'
+          } not reporting healthy. Everything else is operating normally.`,
       action: { href: '/admin/ai', label: 'Review AI services' },
     };
   }
@@ -94,14 +120,28 @@ function brief(health: SystemHealth, stats: OverviewStats) {
 
 export default function AdminDashboardPage() {
   const { data, loading, error, reload } = useAsync(() => api.getOverview(), []);
+  // Health is fetched separately so a database failure degrades the status
+  // strip instead of blanking the whole dashboard.
+  const { data: health } = useAsync(() => api.getHealth(), []);
   const session = useSession();
 
   if (loading) return <LoadingState label="Loading dashboard..." />;
   if (error || !data)
     return <ErrorState message={error ?? 'Failed to load dashboard'} onRetry={reload} />;
 
-  const { stats, health, weeklyActive, lessonsTrend, aiTrend } = data;
-  const attention = brief(health, stats);
+  const { stats, weeklyActive, lessonsTrend, aiTrend } = data;
+  // If the health probe itself fails, fall back to a conservative unknown state
+  // rather than the previous always-green defaults.
+  const healthData: SystemHealth = health ?? {
+    status: 'degraded',
+    db: 'error',
+    api: 'down',
+    groq: 'unknown',
+    whisper: 'unknown',
+    storage: 'unknown',
+    lastChecked: new Date().toISOString(),
+  };
+  const attention = brief(healthData, stats);
   const failureRate = pct(stats.aiFailedRequests, stats.aiRequests);
 
   return (
@@ -112,9 +152,9 @@ export default function AdminDashboardPage() {
         description="Platform health, learner activity, and AI traffic at a glance."
         meta={
           <div className="flex flex-wrap items-center gap-2.5">
-            <StatusBadge status={health.status} label={`Platform ${health.status}`} />
+            <StatusBadge status={healthData.status} label={`Platform ${healthData.status}`} />
             <span className="text-xs text-ink-faint">
-              Checked {new Date(health.lastChecked).toLocaleTimeString()}
+              Checked {new Date(healthData.lastChecked).toLocaleTimeString()}
             </span>
           </div>
         }
@@ -145,19 +185,19 @@ export default function AdminDashboardPage() {
 
         {/* Service strip: the underlying evidence for the headline above. */}
         <div className="grid grid-cols-2 gap-px border-t border-line bg-line/40 sm:grid-cols-3 lg:grid-cols-5">
-          {services(health).map((s) => (
+          {services(healthData).map((s) => (
             <div key={s.label} className="bg-bg-raise/40 px-4 py-3.5">
               <p className="text-[11px] font-medium text-ink-faint">{s.label}</p>
               <div className="mt-1.5 flex items-center gap-2">
                 <span
                   aria-hidden="true"
                   className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                    s.ok ? 'bg-success-fill' : 'bg-danger-fill'
+                    s.ok ? 'bg-success-fill' : s.unknown ? 'bg-warning' : 'bg-danger-fill'
                   } ${s.ok ? '' : 'anim-breathe'}`}
                 />
                 <span
                   className={`truncate text-xs font-semibold capitalize ${
-                    s.ok ? 'text-success' : 'text-danger'
+                    s.ok ? 'text-success' : s.unknown ? 'text-warning' : 'text-danger'
                   }`}
                 >
                   {s.value.replace(/_/g, ' ')}

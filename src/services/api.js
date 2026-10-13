@@ -27,9 +27,11 @@ import {
   parseList,
   randomId,
   rows,
+  rpc,
   table,
   unwrap,
   updateWhere,
+  uploadObject,
   upsert,
   utcDateKey,
   weekStartKey,
@@ -76,88 +78,122 @@ function num(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-/** Pull the learner_profiles row's `user_id` without an extra round trip. */
-async function requireProfile() {
-  const profile = await learnerProfile();
-  if (!profile) throw new Error('Your learner profile is missing. Please sign out and sign in again.');
-  return profile;
+/**
+ * Avatars: two id formats, one catalogue.
+ *
+ * The app keys its six avatars by string - 'avatar-01' ... 'avatar-06' in
+ * `src/constants/avatars.js` - because those ids name the bundled PNGs. The
+ * database stores them as INTEGER, because that is how `public.avatars.avatar_id`
+ * was declared, and `users.avatar_id` follows it. Rows 1..6 are seeded by
+ * `20261007140000_seed_avatar_catalogue.sql`.
+ *
+ * These helpers are the only place the two meet. Before they existed, writing an
+ * avatar sent the string straight into an INTEGER column and PostgREST rejected
+ * it - which stayed hidden because nothing on screen ever called the API for it.
+ */
+const AVATAR_ID_MIN = 1;
+const AVATAR_ID_MAX = 6;
+
+/**
+ * Private bucket for native-speaker verification recordings.
+ *
+ * Matches `20261007150000_verification_audio_bucket.sql`, whose policies require
+ * the first path segment to be the caller's own `users.user_id` and resolve the
+ * caller from `auth.uid()`.
+ */
+const VERIFICATION_AUDIO_BUCKET = 'verification-audio';
+
+/** `'avatar-03'` / `3` / `'3'` -> `3`, or `null` when the id is not in range. */
+function avatarIdToDb(avatarId) {
+  const match = /^(?:avatar-)?0*(\d{1,2})$/.exec(String(avatarId ?? '').trim());
+  if (!match) return null;
+  const parsed = Number.parseInt(match[1], 10);
+  return parsed >= AVATAR_ID_MIN && parsed <= AVATAR_ID_MAX ? parsed : null;
+}
+
+/** `3` -> `'avatar-03'`, or `null` for NULL and anything out of range. */
+function avatarIdFromDb(dbId) {
+  const parsed = Number(dbId);
+  if (!Number.isInteger(parsed) || parsed < AVATAR_ID_MIN || parsed > AVATAR_ID_MAX) return null;
+  return `avatar-${String(parsed).padStart(2, '0')}`;
+}
+
+/** Resolves a stored avatar_id to the shape the UI renders. */
+async function resolveAvatar(dbId) {
+  if (dbId == null) return null;
+  const found = await rows(
+    await table('avatars').select('avatar_name, avatar_image').eq('avatar_id', dbId).maybeSingle()
+  );
+  if (!found[0]) return null;
+  return {
+    id: avatarIdFromDb(dbId),
+    name: found[0].avatar_name,
+    image: found[0].avatar_image,
+  };
 }
 
 /**
- * Credits XP the way `learner.repo.ts#addXp` did: an idempotency-keyed
- * `xp_logs` row gates the payout, then `learner_profiles` and today's
- * `daily_activity` row are advanced.
+ * Credits XP and coins.
  *
- * There is no atomic increment available to the client under RLS, so this is
- * read-modify-write. The idempotency key makes a duplicate call a no-op, which
- * covers the only realistic race (two taps landing before either resolves).
+ * This used to be a client-side read-modify-write: insert an `xp_logs` row, read
+ * `learner_profiles`, then write back the new total. That had two problems the
+ * alpha test flagged as M-1.
+ *
+ *   1. It was not atomic. Two devices - or one device with a double-tapped
+ *      button - both read the same starting total, and the second write
+ *      discarded the first. No sequence of PostgREST calls can express
+ *      `total_xp = total_xp + n` under RLS, so this had to move server-side.
+ *   2. It let the client assert the balance. `GameContext.addXp` pushed an
+ *      absolute total, so `learner_profiles.total_xp` was whatever the device
+ *      claimed rather than what the learner had earned.
+ *
+ * `public.award_xp` fixes both: it resolves the caller from `auth.uid()`, takes
+ * the profile row `FOR UPDATE`, and credits exactly once per idempotency key.
+ * It also owns `daily_activity` and `streak`, which is why the separate
+ * `bumpDailyActivity` helper is gone.
+ *
+ * The return shape is unchanged apart from three additive fields, so no caller
+ * had to be modified.
  */
 async function awardXp({ xp, coins = 0, source = 'unknown', idempotencyKey = null }) {
   const amount = Math.round(num(xp));
-  if (amount <= 0 && coins <= 0) return { credited: false };
+  if (amount <= 0 && num(coins) <= 0) return { credited: false };
 
-  const userId = await getUserId();
-  const profile = await requireProfile();
+  const result = await rpc('award_xp', {
+    p_xp: amount > 0 ? amount : 0,
+    p_coins: Math.round(num(coins)),
+    p_source: source,
+    p_idempotency_key: idempotencyKey,
+  });
 
-  if (idempotencyKey) {
-    const existing = await rows(
-      await table('xp_logs')
-        .select('id')
-        .eq('user_id', userId)
-        .eq('idempotency_key', idempotencyKey)
-        .limit(1)
-    );
-    if (existing.length) return { credited: false, alreadyClaimed: true };
-  }
-
-  if (amount > 0) {
-    await insertRow('xp_logs', {
-      id: randomId('xp'),
-      user_id: userId,
-      amount,
-      source,
-      description: source,
-      idempotency_key: idempotencyKey,
-      timestamp: new Date().toISOString(),
-    });
-  }
-
-  const patch = { last_active: new Date().toISOString() };
-  if (amount > 0) {
-    patch.total_xp = num(profile.total_xp) + amount;
-    patch.daily_xp = num(profile.daily_xp) + amount;
-  }
-  if (coins > 0) patch.coins = num(profile.coins) + coins;
-  await updateWhere('learner_profiles', patch, (q) => q.eq('user_id', userId));
-
-  return { credited: true };
+  return {
+    credited: result?.credited === true,
+    alreadyClaimed: result?.already_claimed === true,
+    total_xp: num(result?.total_xp),
+    coins: num(result?.coins),
+    streak: num(result?.streak),
+  };
 }
 
-/** Adds to today's `daily_activity` row, creating it on the first XP of the day. */
-async function bumpDailyActivity(userId, xp) {
-  if (!(xp > 0)) return;
-  const activityDate = utcDateKey();
-  const existing = await rows(
-    await table('daily_activity')
-      .select('activity_id, xp_earned')
-      .eq('user_id', userId)
-      .eq('activity_date', activityDate)
-      .maybeSingle()
+/**
+ * Fails fast when the caller is not a moderator or admin.
+ *
+ * The RLS policies already refuse these reads and writes, but they refuse with a
+ * bare "new row violates row-level security" or an empty result set, which no
+ * screen can explain to a user. Reading the caller's own `users` row is permitted
+ * under RLS, so this costs one query on rare paths and produces a message that
+ * can actually be displayed.
+ */
+async function requireModerator() {
+  const authId = await getAuthId();
+  const row = unwrap(
+    await table('users').select('role').eq('supabase_id', authId).maybeSingle(),
+    'Could not verify your role.'
   );
-  const current = existing[0];
-  if (current) {
-    await updateWhere(
-      'daily_activity',
-      { xp_earned: num(current.xp_earned) + xp },
-      (q) => q.eq('activity_id', current.activity_id)
-    );
-  } else {
-    await insertRow('daily_activity', {
-      user_id: userId,
-      activity_date: activityDate,
-      xp_earned: xp,
-    });
+  if (!row || (row.role !== 'moderator' && row.role !== 'admin')) {
+    throw new Error('This action is restricted to moderators.');
   }
+  return row.role;
 }
 
 const POST_TYPE_KEYS = [
@@ -355,13 +391,6 @@ export const api = {
     const row = await ownUserRow(
       'user_id, fullname, username, email, country, role, preferred_lang, learning_lang, avatar_id, created_at'
     );
-    let avatar = null;
-    if (row.avatar_id) {
-      const found = await rows(
-        await table('avatars').select('avatar_name, avatar_image').eq('avatar_id', row.avatar_id).maybeSingle()
-      );
-      if (found[0]) avatar = { name: found[0].avatar_name, image: found[0].avatar_image };
-    }
     return {
       id: row.user_id,
       name: row.fullname,
@@ -371,7 +400,11 @@ export const api = {
       username: row.username,
       country: row.country,
       role: row.role,
-      avatar,
+      // The app's string id is returned alongside the resolved image so the
+      // avatar picker can highlight the current choice without the screen
+      // having to re-derive it from AsyncStorage.
+      avatar_id: avatarIdFromDb(row.avatar_id),
+      avatar: await resolveAvatar(row.avatar_id),
       created_at: row.created_at,
     };
   },
@@ -385,7 +418,16 @@ export const api = {
     if (data.learning_language != null) patch.learning_lang = data.learning_language;
     if (data.country != null) patch.country = data.country;
     if (data.username != null) patch.username = data.username;
-    if (data.avatar_id != null) patch.avatar_id = data.avatar_id;
+    if (data.avatar_id != null) {
+      // Reject an unknown id instead of writing it. `avatar_id` is one of only
+      // six columns the client may update, and a typo would otherwise surface
+      // much later as a blank avatar in the feed or on the leaderboard.
+      const avatarId = avatarIdToDb(data.avatar_id);
+      if (avatarId == null) {
+        throw new Error(`'${data.avatar_id}' is not one of the available avatars.`);
+      }
+      patch.avatar_id = avatarId;
+    }
 
     if (Object.keys(patch).length) {
       await updateWhere('users', patch, (q) => q.eq('user_id', row.user_id));
@@ -1125,27 +1167,51 @@ export const api = {
     };
   },
 
-  updateGameStats: async (data = {}) => {
-    const userId = await getUserId();
-    const profile = await requireProfile();
-
-    const patch = { last_active: new Date().toISOString() };
-    if (data.xp != null) patch.total_xp = Math.max(0, Math.round(num(data.xp)));
-    if (data.coins != null) patch.coins = Math.max(0, Math.round(num(data.coins)));
-    if (data.streak != null) patch.streak = Math.max(0, Math.round(num(data.streak)));
-    if (data.daily_xp != null) patch.daily_xp = Math.max(0, Math.round(num(data.daily_xp)));
-
-    if (Object.keys(patch).length > 1) {
-      await updateWhere('learner_profiles', patch, (q) => q.eq('user_id', userId));
+  /**
+   * Replays one queued XP event from the offline queue.
+   *
+   * The payload used to be an absolute total (`{ xp: newXp }`), which is how
+   * the client came to own the balance. It is now a delta plus the idempotency
+   * key minted when the event happened, so an entry replayed after the app was
+   * closed credits exactly once.
+   *
+   * A stale absolute payload - an entry written by an older build, still sitting
+   * in AsyncStorage under `@offline_queue` - is deliberately dropped rather than
+   * reinterpreted, because passing the balance as a delta would award it again.
+   */
+  syncGameStats: async (payload = {}) => {
+    if (payload?.xp_delta != null) {
+      return api.awardXp({
+        xp: num(payload.xp_delta),
+        coins: num(payload.coin_delta),
+        source: payload.source || 'unknown',
+        idempotencyKey: payload.idempotency_key || null,
+      });
     }
 
-    // `total_xp` is cumulative, so the growth since the last sync is what was
-    // earned today. Rolling that into daily_activity is what makes the weekly
-    // XP chart real now that tutor_sessions is no longer written.
-    const delta = num(profile.total_xp) - num(patch.total_xp ?? profile.total_xp);
-    if (delta > 0) await bumpDailyActivity(userId, delta);
+    if (payload?.xp != null) {
+      console.warn(
+        '[api] Dropped a queued absolute XP total written by a previous app version.',
+        'XP is credited by the server and cannot be asserted by the client.'
+      );
+    }
+
+    if (payload?.daily_goal != null) {
+      await api.updateGameSettings({ daily_goal: payload.daily_goal });
+    }
 
     return { success: true };
+  },
+
+  /** Credits XP through the transactional server function. */
+  awardXp: async ({ xp, coins = 0, source = 'unknown', idempotencyKey = null } = {}) =>
+    awardXp({ xp, coins, source, idempotencyKey }),
+
+  updateGameSettings: async ({ daily_goal } = {}) => {
+    const userId = await getUserId();
+    const goal = Math.max(0, Math.round(num(daily_goal, 50)));
+    await updateWhere('learner_profiles', { daily_goal: goal }, (q) => q.eq('user_id', userId));
+    return { success: true, daily_goal: goal };
   },
 
   getLeaderboard: async (period = 'weekly') => {
@@ -1176,24 +1242,21 @@ export const api = {
     const today = utcDateKey();
     const reward = { xp: 50, coins: 25 };
 
-    // The unique (user_id, activity_date) index doubles as the once-per-day
-    // claim guard, exactly as it did in learner.repo.ts.
-    const inserted = await upsert(
-      'daily_activity',
-      { user_id: userId, activity_date: today, xp_earned: reward.xp },
-      'idx_daily_activity_user_date',
-      { ignoreDuplicates: true }
-    );
-
-    if (!inserted.length) return { claimed: false, reward: { xp: 0, coins: 0 } };
-
-    await awardXp({
+    // The once-per-day guard is the idempotency key, not a separate upsert.
+    // This used to insert a `daily_activity` row as the claim guard and then
+    // call `awardXp`, which is now impossible to do twice without double
+    // counting: `award_xp` owns that table and adds to today's row itself.
+    const result = await awardXp({
       xp: reward.xp,
       coins: reward.coins,
       source: 'daily_reward',
       idempotencyKey: `daily_reward:${userId}:${today}`,
     });
-    return { claimed: true, reward };
+
+    if (!result.credited) {
+      return { claimed: false, reward: { xp: 0, coins: 0 } };
+    }
+    return { claimed: true, reward, total_xp: result.total_xp, coins: result.coins };
   },
 
   // =========================================================================
@@ -1407,24 +1470,65 @@ export const api = {
   // Native speaker verification
   // =========================================================================
 
+  /**
+   * Sends a recording to native speakers for verification.
+   *
+   * The audio is uploaded to the private `verification-audio` bucket and the
+   * resulting storage path is recorded on the request row.
+   *
+   * This used to discard the recording entirely: `audio_path` was set to the
+   * literal string `'inline_base64'` and the base64 was dropped, while the caller
+   * was told the submission had been sent. A learner recorded a phrase, waited,
+   * and no audio existed anywhere - and `getVerificationRequests` handed
+   * moderators a `audio_path` that could not be played.
+   *
+   * `audioBase64` is a bare base64 string. `data:` URLs are accepted because that
+   * is what the recorder screens hold, and the prefix is stripped before decoding.
+   */
   submitVerification: async (audioBase64, phraseId) => {
     const userId = await getUserId();
+
+    let audioPath = null;
+    if (audioBase64) {
+      const raw = String(audioBase64);
+      const base64 = raw.includes(',') ? raw.slice(raw.indexOf(',') + 1) : raw;
+      // Atob yields a binary string; each code unit is one byte, so this packs
+      // back into the Uint8Array the upload API expects.
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+
+      audioPath = await uploadObject(
+        VERIFICATION_AUDIO_BUCKET,
+        `${userId}/${randomId('verify')}.webm`,
+        bytes,
+        'audio/webm'
+      );
+    }
+
     const created = await insertRow('verification_requests', {
       user_id: userId,
       word_id: phraseId ? Number(phraseId) : null,
-      audio_path: audioBase64 ? 'inline_base64' : null,
+      audio_path: audioPath,
       recorded_text: null,
       status: 'pending',
     });
+
     return {
       request_id: created.request_id,
       status: 'pending',
-      message: 'Submitted for native speaker verification',
+      audio_path: audioPath,
+      message: audioPath
+        ? 'Submitted for native speaker verification'
+        : 'Submitted without a recording. A native speaker will review the word only.',
     };
   },
 
   getVerificationRequests: async () => {
-    // Moderator-only upstream; RLS allows a caller to read their own requests.
+    // Moderator-only. RLS would return an empty set for a normal learner, which
+    // is indistinguishable from "nothing is pending", so the role is checked
+    // first and reported as a refusal.
+    await requireModerator();
     return rows(
       await table('verification_requests')
         .select('*')
@@ -1434,7 +1538,11 @@ export const api = {
   },
 
   approveVerification: async () => {
-    throw new Error('Only moderators can approve verifications.');
+    await requireModerator();
+    throw new Error(
+      'Approving a verification is not exposed to the mobile app. ' +
+        'Use the Supabase SQL editor; see docs/DEPLOYMENT_RUNBOOK.md.'
+    );
   },
 
   // =========================================================================
@@ -1458,10 +1566,17 @@ export const api = {
   },
 
   /**
-   * Two of the three consumers (ProfileScreen, LearnScreen) iterate this as an
-   * array of `{ date, xp }`; `LearningProgressCard` expects an aggregate object.
-   * The array is the contract that three call sites share, so it stays the
-   * return value and the card's `Number(undefined) || 0` guards absorb the rest.
+   * XP earned on each of the last seven days, oldest first.
+   *
+   * Returns an array of `{ date, xp }`. That is the contract two of the three
+   * callers use - `LearnScreen` reduces it for a total, `ProfileScreen` maps it
+   * into a chart - so it stays an array. `LearningProgressCard` also calls this
+   * and needs aggregates; it derives them itself rather than this returning two
+   * shapes for one name.
+   *
+   * Rows are written by `public.award_xp()` (see
+   * 20261007130000_award_xp_and_tighten_grants.sql); the client no longer writes
+   * this table.
    */
   getWeeklyProgress: async () => {
     const userId = await getUserId();
@@ -1645,8 +1760,10 @@ export const api = {
   },
 
   verifyPreservedWord: async (wordId, status) => {
-    // RLS only lets moderators verify; a normal learner gets a clear rejection
-    // from the UPDATE rather than a silent no-op.
+    // RLS lets only moderators verify; a normal learner gets a clear rejection
+    // from the UPDATE rather than a silent no-op. Checked up front so the
+    // message says why instead of surfacing a policy violation.
+    await requireModerator();
     await updateWhere('preserved_words', { status }, (q) => q.eq('word_id', wordId));
     return { word_id: wordId, status };
   },
@@ -1677,10 +1794,21 @@ export const api = {
 // ---------------------------------------------------------------------------
 
 const OFFLINE_ROUTES = [
-  { match: /^\/api\/game\/stats$/, run: (body) => api.updateGameStats(body) },
+  { match: /^\/api\/game\/stats$/, run: (body) => api.syncGameStats(body) },
   {
     match: /^\/api\/user\/me$/,
-    run: (body) => api.updateProfile({ name: body?.name, country: body?.country }),
+    // `avatar_id` is forwarded because ProfileScreen enqueues an avatar change
+    // at this path. `native_language` / `target_language` are still dropped -
+    // OnboardingForm enqueues them here too and they have never been replayed.
+    // Left alone rather than fixed in passing; it needs its own change, since
+    // wiring it up means deciding what an offline language change should do to a
+    // profile that has since moved on.
+    run: (body) =>
+      api.updateProfile({
+        name: body?.name,
+        country: body?.country,
+        avatar_id: body?.avatar_id,
+      }),
   },
   {
     match: /^\/api\/v2\/vocabulary\/review$/,

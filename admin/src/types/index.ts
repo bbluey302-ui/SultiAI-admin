@@ -38,9 +38,16 @@ export interface SystemHealth {
   status: SystemStatus;
   db: 'connected' | 'error';
   api: 'up' | 'down';
-  groq: 'configured' | 'not_set' | 'error';
-  whisper: 'configured' | 'not_set' | 'error';
-  storage: 'up' | 'down';
+  /**
+   * Groq/Whisper run inside Supabase Edge Functions; their API keys are Edge
+   * Function secrets this app cannot introspect, and Storage needs its own
+   * credentials. None can be verified from here, so they report `unknown`
+   * rather than a green `configured`. Only a real request/health probe flips
+   * them to `configured`/`error`.
+   */
+  groq: 'configured' | 'not_set' | 'error' | 'unknown';
+  whisper: 'configured' | 'not_set' | 'error' | 'unknown';
+  storage: 'up' | 'down' | 'unknown';
   lastChecked: string;
 }
 
@@ -58,7 +65,6 @@ export interface DailyActivityPoint {
 
 export interface OverviewResponse {
   stats: OverviewStats;
-  health: SystemHealth;
   weeklyActive: SeriesPoint[];
   lessonsTrend: SeriesPoint[];
   aiTrend: SeriesPoint[];
@@ -200,4 +206,63 @@ export interface AdminSettings {
   aiProvider: 'groq' | 'openai' | 'auto';
   admins: { id: number; name: string; email: string; role: UserRole }[];
   updatedAt: string;
+}
+
+/** A raw `public.users` row, as rendered by the live DB monitor. */
+export interface MonitoredUser {
+  user_id: number;
+  fullname: string;
+  username: string | null;
+  email: string;
+  clerk_id: string | null;
+  google_id: string | null;
+  supabase_id: string | null;
+  avatar_id: number | null;
+  preferred_lang: string | null;
+  learning_lang: string | null;
+  country: string | null;
+  role: string;
+  is_verified: number;
+  is_native_speaker: number;
+  bio: string | null;
+  created_at: string;
+}
+
+export interface UserStats {
+  total: number;
+  verified: number;
+  nativeSpeakers: number;
+  admins: number;
+  newLast7Days: number;
+  latestSignup: string | null;
+}
+
+export interface MonitorSnapshot {
+  ok: true;
+  fetchedAt: string;
+  stats: UserStats;
+  users: MonitoredUser[];
+}
+
+export interface AuditLog {
+  id: number;
+  action: string;
+  resourceType: string;
+  resourceId: string | null;
+  details: string | null;
+  timestamp: string;
+  actor: { id: number; name: string; email: string } | null;
+}
+
+export interface AuditLogResponse {
+  items: AuditLog[];
+  total: number;
+  page: number;
+  perPage: number;
+}
+
+export interface AuditLogFilters {
+  search: string;
+  resourceType: string;
+  actorId: number | 'all';
 }

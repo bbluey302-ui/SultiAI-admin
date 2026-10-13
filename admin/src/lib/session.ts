@@ -1,6 +1,7 @@
 'use client';
 
 import { useSyncExternalStore } from 'react';
+import { getSupabase } from '@/lib/supabase';
 
 export interface AdminSession {
   id: string;
@@ -13,18 +14,9 @@ export interface AdminSession {
   refreshToken?: string;
 }
 
-interface SignInResponse {
-  data?: {
-    user?: { id?: number; fullname?: string; email?: string; role?: string };
-    accessToken?: string;
-    refreshToken?: string;
-  };
-}
-
 const STORAGE_KEY = 'sultiai_admin_session';
 const COOKIE_KEY = 'sultiai_admin_session';
 const COOKIE_MAX_AGE = 7 * 24 * 60 * 60;
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '';
 
 let currentSession: AdminSession | null = null;
 let initialized = false;
@@ -103,65 +95,61 @@ export const adminSession = {
     return currentSession;
   },
 
+  /**
+   * Authenticates against Supabase Auth, then confirms the account maps to a
+   * `public.users` row whose role is `admin`. Anything else is signed straight
+   * back out so a stray successful password check never leaves a session behind.
+   */
   async signIn(email: string, password: string): Promise<AdminSession> {
-    const health = await fetch(`${API_BASE}/api/health`).catch(() => null);
-    if (!health?.ok) {
-      throw new Error('Cannot reach the API server. Make sure it is running on port 3001.');
+    const supabase = getSupabase();
+
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) {
+      const message = /invalid login credentials/i.test(error.message)
+        ? 'Invalid email or password.'
+        : error.message;
+      throw new Error(message);
+    }
+    if (!data.user) {
+      throw new Error('Sign in failed. Please try again.');
     }
 
-    const res = await fetch(`${API_BASE}/api/auth/signin`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-    });
+    // RLS lets a signed-in user read their own profile row.
+    const { data: profile, error: profileError } = await supabase
+      .from('users')
+      .select('user_id, fullname, email, role')
+      .eq('supabase_id', data.user.id)
+      .maybeSingle();
 
-    if (!res.ok) {
-      const err = (await res.json().catch(() => ({}))) as {
-        error?: { message?: string };
-        message?: string;
-      };
-      const message =
-        err.error?.message ||
-        err.message ||
-        (res.status === 401 ? 'Invalid email or password.' : '');
-      throw new Error(message || `Sign in failed (${res.status}).`);
+    if (profileError) {
+      await supabase.auth.signOut();
+      throw new Error(`Could not load your profile: ${profileError.message}`);
     }
-
-    const payload = (await res.json()) as SignInResponse;
-    const d = payload.data ?? {};
-    const user = d.user;
-
-    if (user?.role !== 'admin') {
+    if (!profile || profile.role !== 'admin') {
+      await supabase.auth.signOut();
       throw new Error('Access denied. This account does not have admin privileges.');
     }
 
-    const name = user?.fullname || 'Admin';
+    const name = (profile.fullname as string) || 'Admin';
     const session: AdminSession = {
-      id: String(user?.id ?? ''),
+      id: String(profile.user_id ?? ''),
       name,
-      email: user?.email || email,
+      email: (profile.email as string) || email,
       role: 'admin',
       avatar: name.charAt(0).toUpperCase(),
       signedInAt: new Date().toISOString(),
-      token: d.accessToken ?? '',
-      refreshToken: d.refreshToken,
+      token: data.session?.access_token ?? '',
+      refreshToken: data.session?.refresh_token,
     };
     commit(session);
     return session;
   },
 
   async signOut(): Promise<void> {
-    const session = currentSession;
-    if (session?.refreshToken) {
-      try {
-        await fetch(`${API_BASE}/api/auth/signout`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refreshToken: session.refreshToken }),
-        });
-      } catch {
-        // Never block sign-out on a network failure — the local session clears regardless.
-      }
+    try {
+      await getSupabase().auth.signOut();
+    } catch {
+      // Never block sign-out on a network failure — the local session clears regardless.
     }
     commit(null);
   },
@@ -171,8 +159,16 @@ export function useSession() {
   return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }
 
-/** Bearer token for API calls, or '' when signed out. */
-export function getAccessToken(): string {
-  ensureInit();
-  return currentSession?.token ?? '';
+/**
+ * Bearer token for `/api/admin` calls, or '' when signed out. Read from the
+ * Supabase client (not our display cache) so it is always the freshest token,
+ * including after a background refresh.
+ */
+export async function getAccessToken(): Promise<string> {
+  try {
+    const { data } = await getSupabase().auth.getSession();
+    return data.session?.access_token ?? '';
+  } catch {
+    return '';
+  }
 }

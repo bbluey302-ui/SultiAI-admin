@@ -8,8 +8,9 @@ const SESSION_COOKIE = 'sultiai_admin_session';
  *
  * This is a UX redirect, not the security boundary: the cookie is written by
  * client JS and is not signed, so it only hides the routes from someone who has
- * not signed in. The real gate is `requireRole('admin')` on the API server,
- * which verifies the JWT signature. Do not rely on this file to protect data.
+ * not signed in. The real gate is `requireAdmin()` in the `/api/admin` route
+ * handler, which verifies the Supabase access token and the caller's role.
+ * Do not rely on this file to protect data.
  */
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;

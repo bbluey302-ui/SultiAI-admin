@@ -792,7 +792,6 @@ export default function VoiceModeScreen({ navigation }) {
     console.log('[VoiceMode] Calling speakTTS with voice:', charRef.current);
     speakTTS(text, {
       voice: charRef.current,
-      language: { bisaya: 'ceb', tagalog: 'tl', english: 'en-US' }[langRef.current] || 'en-US',
       rate,
       onStart: startedSpeaking,
       onDone: () => {

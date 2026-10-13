@@ -25,6 +25,7 @@ import {
 import { useAsync } from '@/hooks/useAsync';
 import { useToast } from '@/components/Toast';
 import { api } from '@/lib/api';
+import { useRealtimeUsersVersion } from '@/lib/realtime';
 import { ConfirmModal } from '@/components/ConfirmModal';
 import { downloadCsv } from '@/lib/export';
 import { errorMessage } from '@/lib/errors';
@@ -51,9 +52,13 @@ export default function AdminUsersPage() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedPending, setSelectedPending] = useState<Set<number>>(new Set());
 
+  // Bumps on every public.users INSERT/UPDATE/DELETE, so the list re-fetches
+  // the moment a user is created or removed anywhere (console, SQL, dashboard).
+  const rtVersion = useRealtimeUsersVersion();
+
   const { data, loading, error, reload } = useAsync(
     () => api.listUsers(filters, page, PER_PAGE),
-    [filters, page]
+    [filters, page, rtVersion]
   );
 
   // Only requested once the tab is opened, so the default view stays cheap.

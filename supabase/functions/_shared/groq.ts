@@ -21,8 +21,22 @@ const groqApiKey = () => env('GROQ_API_KEY');
 const chatModel = () => env('GROQ_MODEL', 'openai/gpt-oss-120b');
 // CHANGE: the Express version sent chat completions to the text-only
 // `openai/gpt-oss-120b` for image analysis, which could not accept images, so
-// AR image analysis never worked. Vision now gets its own model default.
-const visionModel = () => env('GROQ_VISION_MODEL', 'meta-llama/llama-4-scout-17b-16e-instruct');
+// AR image analysis never worked. Vision now gets its own model id.
+//
+// There is deliberately NO default here. Verified live against the project's
+// Groq key on 2026-10-06 (`GET /v1/models`): the account can reach
+// `openai/gpt-oss-20b`, `openai/gpt-oss-120b`, `qwen/qwen3.8-27b`,
+// `whisper-large-v3`, `whisper-large-v3-turbo`, `allam-2-7b`, the orpheus TTS
+// models and the prompt-guard/safeguard models - and NOT ONE of them accepts
+// images. The previous default, `meta-llama/llama-4-scout-17b-16e-instruct`,
+// has been retired from Groq and returns 404, so every AR scan failed with an
+// opaque provider error.
+//
+// Leaving it unset means `groqVision` throws a message that names the missing
+// secret instead, and `ar_analyze` degrades to "no objects" rather than
+// 502-ing. Set `GROQ_VISION_MODEL` to a vision-capable model your key can
+// actually reach to turn AR image recognition back on.
+const visionModel = () => env('GROQ_VISION_MODEL', '');
 
 export interface GroqMessage {
   role: 'system' | 'user' | 'assistant';
@@ -35,9 +49,14 @@ export interface GroqOptions {
   reasoningEffort?: 'low' | 'medium' | 'high';
 }
 
+// Models that emit <reasoning>/<thinking> blocks and need `reasoning_effort`.
+// `qwen/qwen3.8-27b` is the id Groq actually serves today; the older
+// `qwen/qwen3.6-27b` is kept because a key pinned to it would otherwise be
+// treated as a plain chat model and get no reasoning_effort.
 const REASONING_MODELS = new Set([
   'openai/gpt-oss-120b',
   'openai/gpt-oss-20b',
+  'qwen/qwen3.8-27b',
   'qwen/qwen3.6-27b',
 ]);
 
@@ -348,6 +367,17 @@ export async function groqVision(
   const key = groqApiKey();
   if (!key) throw new Error('Vision requires GROQ_API_KEY');
 
+  const model = visionModel();
+  if (!model) {
+    // Fail with the actionable message rather than a 404 from the provider for
+    // a model id that no longer exists.
+    throw new Error(
+      'Image recognition is not configured: set GROQ_VISION_MODEL to a ' +
+        'vision-capable model this Groq key can reach. The chat, voice and ' +
+        'text models are unaffected.'
+    );
+  }
+
   const res = await fetchWithRetry(`${GROQ_URL}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -355,7 +385,7 @@ export async function groqVision(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: visionModel(),
+      model,
       messages: [
         {
           role: 'user',

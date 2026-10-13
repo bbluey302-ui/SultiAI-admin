@@ -161,6 +161,87 @@ export function stopTTS() {
   Speech.stop();
 }
 
+// ---------------------------------------------------------------------------
+// Voice selection by locale
+// ---------------------------------------------------------------------------
+// `Speech.speak` picks a voice by `language` only when no `voice` is passed,
+// so on a device with both a Filipino and an English voice installed every
+// character would otherwise sound identical. We enumerate the engine's actual
+// voices (voiceURI on web, TTS engine identifier on native) and hand the best
+// BCP-47 match for the character's locale straight to `Speech.speak`.
+
+let voicesCache = null;
+let voicesCacheAt = 0;
+const VOICES_CACHE_TTL_MS = 60000;
+const VOICES_FETCH_TIMEOUT_MS = 1500;
+
+function withTimeout(promise, ms, fallback) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => setTimeout(() => resolve(fallback), ms)),
+  ]);
+}
+
+function normalizeLang(lang) {
+  return String(lang || '').replace('_', '-').toLowerCase();
+}
+
+// Score how well a voice's locale covers the target locale. Higher is better;
+// returns 0 when there is no usable relation.
+function langScore(candidate, target) {
+  const c = normalizeLang(candidate);
+  const t = normalizeLang(target);
+  if (!c || !t) return 0;
+  const [c1, c2] = c.split('-');
+  const [t1, t2] = t.split('-');
+  if (c === t) return 4; // exact: fil-ph == fil-ph
+  if (c1 === t1 && c2 && t2) return 3; // same language+region, different sub-locale
+  if (c1 === t1) return 2; // same language root: en == en
+  // Tagalog and Filipino are the same spoken language; Cebuano has no engine
+  // voice anywhere, so a Filipino/Tagalog voice is the closest speaker for it.
+  if ((c1 === 'tl' && t1 === 'fil') || (c1 === 'fil' && t1 === 'tl')) return 2;
+  if (t2 === 'ph' && (c1 === 'fil' || c1 === 'tl' || c1 === 'en')) return 1; // any PH voice
+  return 0;
+}
+
+async function getCachedVoices() {
+  const now = Date.now();
+  if (voicesCache !== null && now - voicesCacheAt < VOICES_CACHE_TTL_MS) {
+    return voicesCache;
+  }
+  try {
+    voicesCache = await withTimeout(
+      Speech.getAvailableVoicesAsync(),
+      VOICES_FETCH_TIMEOUT_MS,
+      []
+    );
+  } catch (e) {
+    console.warn('[TTS] getAvailableVoicesAsync failed:', e && e.message);
+    voicesCache = [];
+  }
+  voicesCacheAt = now;
+  return voicesCache;
+}
+
+/**
+ * Best installed voice for a BCP-47 locale, or null when the engine exposes no
+ * voices (or none related to the target).
+ */
+async function pickBestVoice(locale) {
+  const voices = await getCachedVoices();
+  if (!voices || !voices.length) return null;
+  let best = null;
+  let bestScore = 0;
+  for (const v of voices) {
+    const score = langScore(v.language, locale);
+    if (score > bestScore) {
+      bestScore = score;
+      best = v;
+    }
+  }
+  return best;
+}
+
 /**
  * On-device synthesis via `expo-speech`. This is the only TTS path now, so the
  * old "fallback" framing is gone — but the name is kept because the watchdog
@@ -170,10 +251,17 @@ export function stopTTS() {
  * passes `fil`, PronunciationScreen passes `ceb`). Otherwise the character's own
  * locale is used, so picking "Lola" in Settings actually sounds different.
  */
-function speakFallback(clean, { language, rate, pitch, voice, onStart, onDone, onError }) {
+async function speakFallback(clean, { language, rate, pitch, voice, onStart, onDone, onError }) {
   const locale = language || characterLocale(voice);
-  notifyWeb('speech synthesis: ' + locale);
-  console.log('[TTS] Synthesizing on device with locale', locale, 'for:', clean.substring(0, 30));
+  const picked = await pickBestVoice(locale);
+  notifyWeb('speech synthesis: ' + locale + (picked ? ' -> ' + picked.identifier : ' (engine default voice)'));
+  console.log(
+    '[TTS] Synthesizing on device with locale',
+    locale,
+    picked ? `voice: ${picked.identifier}` : '(engine default voice)',
+    'for:',
+    clean.substring(0, 30)
+  );
   fallbackGuardTimer = setTimeout(
     () => {
       fallbackGuardTimer = null;
@@ -191,24 +279,53 @@ function speakFallback(clean, { language, rate, pitch, voice, onStart, onDone, o
     console.log('[TTS] Speech completed');
     if (onDone) onDone();
   };
-  Speech.speak(clean, {
-    language: locale,
-    rate,
-    pitch,
-    onStart: () => {
-      console.log('[AUDIO] speech-synthesis started');
-      if (onStart) onStart();
-    },
-    onDone: finishFb,
-    onError: (error) => {
-      console.error('[TTS] Speech error:', error);
-      if (fallbackGuardTimer) {
-        clearTimeout(fallbackGuardTimer);
-        fallbackGuardTimer = null;
-      }
-      if (onError) onError();
-    },
-  });
+
+  if (
+    IS_WEB &&
+    (typeof window === 'undefined' ||
+      !window.speechSynthesis ||
+      typeof window.speechSynthesis.speak !== 'function')
+  ) {
+    console.warn('[TTS] Web SpeechSynthesis unavailable — treating utterance as done');
+    finishFb();
+    return;
+  }
+
+  try {
+    Speech.speak(clean, {
+      language: locale,
+      rate,
+      pitch,
+      ...(picked ? { voice: picked.identifier } : {}),
+      onStart: () => {
+        console.log('[AUDIO] speech-synthesis started');
+        if (onStart) onStart();
+      },
+      onDone: finishFb,
+      onError: (error) => {
+        const msg = error && error.message ? String(error.message).trim() : '';
+        // Browsers raise an empty-message error when an utterance is cancelled,
+        // e.g. stopTTS() on unmount or when the next reply interrupts playback.
+        // That is completion, not failure — finish quietly so the mic loop and
+        // UI state keep moving instead of surfacing a confusing "[Error]".
+        if (!msg) {
+          console.log('[TTS] Speech cancelled (empty error) — treating as done');
+          finishFb();
+          return;
+        }
+        console.error('[TTS] Speech error:', error);
+        if (fallbackGuardTimer) {
+          clearTimeout(fallbackGuardTimer);
+          fallbackGuardTimer = null;
+        }
+        if (onError) onError();
+      },
+    });
+  } catch (e) {
+    console.error('[TTS] Speech.speak threw:', e && e.message);
+    finishFb();
+    if (onError) onError();
+  }
 }
 
 function playWebDecoded(audioUri, token, { done, failed, started }, retryCount = 0) {

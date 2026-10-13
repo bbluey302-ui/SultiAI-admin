@@ -15,8 +15,8 @@
 export const CHARACTER_VOICES = {
   blessica: {
     label: 'Blessica',
-    name: 'Blessica (Female, Professional)',
-    description: 'Professional, articulate female voice - the default Sulti instructor',
+    name: 'Blessica (Warm female)',
+    description: 'Friendly and approachable',
     locale: 'fil-PH',
     rate: 1.0,
     pitch: 1.05,
@@ -24,8 +24,8 @@ export const CHARACTER_VOICES = {
   },
   angel: {
     label: 'Angel',
-    name: 'Angel (Male, Clear)',
-    description: 'Clear, professional male voice with precise articulation',
+    name: 'Angel (Clear male)',
+    description: 'Patient and supportive',
     locale: 'fil-PH',
     rate: 0.95,
     pitch: 1.0,
@@ -33,8 +33,8 @@ export const CHARACTER_VOICES = {
   },
   sultan: {
     label: 'Sultan',
-    name: 'Sultan (Male, Scholarly)',
-    description: 'Scholarly male voice with academic authority and cultural expertise',
+    name: 'Sultan (Authoritative male)',
+    description: 'Confident and culturally grounded',
     locale: 'en-PH',
     rate: 0.9,
     pitch: 0.95,
@@ -42,8 +42,8 @@ export const CHARACTER_VOICES = {
   },
   lola: {
     label: 'Lola',
-    name: 'Lola (Elder Female, Wise)',
-    description: 'Wise, experienced female voice with deep cultural knowledge',
+    name: 'Lola (Gentle female)',
+    description: 'Wise and encouraging',
     locale: 'en-PH',
     rate: 0.82,
     pitch: 0.92,

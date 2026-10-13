@@ -1,15 +1,19 @@
-import { getAccessToken } from '@/lib/session';
+import { adminSession, getAccessToken } from '@/lib/session';
 import type {
   AdminSettings,
   AdminUser,
+  AuditLogFilters,
+  AuditLogResponse,
   AiUsageStats,
   CommunityPost,
   CommunityReport,
   FeedbackItem,
   LessonModule,
+  MonitorSnapshot,
   OverviewResponse,
   PreservedWord,
   ReportStatus,
+  SystemHealth,
   UserDetail,
   UserFilters,
   UserListResponse,
@@ -18,10 +22,12 @@ import type {
   XpOverview,
 } from '@/types';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '';
+// Same-origin by default: the route handlers under `/api/admin` live in this
+// app. Override only if the console is ever hosted separately from its API.
+const API_BASE = process.env.NEXT_PUBLIC_ADMIN_API_URL ?? '';
 
 async function http<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const token = getAccessToken();
+  const token = await getAccessToken();
   const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers: {
@@ -30,8 +36,15 @@ async function http<T>(method: string, path: string, body?: unknown): Promise<T>
     },
     body: body ? JSON.stringify(body) : undefined,
   });
+
+  if (res.status === 401) {
+    // The Supabase access token is gone or could not be refreshed; drop the
+    // cached console session so the shell returns to the login screen.
+    void adminSession.signOut();
+  }
+
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: `Request failed (${res.status})` }));
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(err.error || `Request failed (${res.status}): ${path}`);
   }
   const json = await res.json();
@@ -41,6 +54,12 @@ async function http<T>(method: string, path: string, body?: unknown): Promise<T>
 
 export const api = {
   getOverview: (): Promise<OverviewResponse> => http('GET', '/api/admin/analytics/overview'),
+
+  /** Real service health from dedicated checks; AI providers report `unknown`. */
+  getHealth: (): Promise<SystemHealth> => http('GET', '/api/admin/health'),
+
+  /** Live `public.users` snapshot for the database monitor page. */
+  getUserMonitor: (): Promise<MonitorSnapshot> => http('GET', '/api/admin/users/snapshot'),
 
   listUsers: (filters: UserFilters, page: number, perPage: number): Promise<UserListResponse> =>
     http(
@@ -124,4 +143,17 @@ export const api = {
 
   updateSettings: (patch: Partial<AdminSettings>): Promise<AdminSettings> =>
     http('PUT', '/api/admin/settings', patch),
+
+  listAuditLogs: (
+    filters: AuditLogFilters,
+    page: number,
+    perPage: number
+  ): Promise<AuditLogResponse> =>
+    http(
+      'GET',
+      `/api/admin/audit-logs?page=${page}&perPage=${perPage}` +
+        `&search=${encodeURIComponent(filters.search || '')}` +
+        `&resourceType=${encodeURIComponent(filters.resourceType || 'all')}` +
+        `&actorId=${encodeURIComponent(String(filters.actorId))}`
+    ),
 };

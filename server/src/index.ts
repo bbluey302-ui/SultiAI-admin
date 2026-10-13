@@ -84,6 +84,94 @@ app.use(
   })
 );
 
+// Serve static files (favicon, icons) from public folder
+app.use(express.static(path.join(__dirname, '../public'), {
+  maxAge: '1d',
+  etag: true,
+  lastModified: true,
+}));
+
+// Root endpoint - shows server status and quick links
+app.get('/', async (_req, res) => {
+  const groqConfigured = isGroqConfigured();
+  const health: Record<string, any> = {
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    groq: groqConfigured ? 'configured' : 'not_set',
+    mode: groqConfigured ? 'api' : 'none',
+    database: { status: 'unknown', dialect: getDialectName() },
+  };
+
+  try {
+    const db = getDb();
+    const start = Date.now();
+    await db.all(sql`SELECT 1`);
+    health.database = { status: 'ok', dialect: getDialectName(), latencyMs: Date.now() - start };
+  } catch (error) {
+    health.database = {
+      status: 'error',
+      dialect: getDialectName(),
+      error: (error as Error).message,
+    };
+    health.status = 'degraded';
+  }
+
+  const isHealthy = health.status === 'ok';
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SultiAI Server</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; color: #e2e8f0; }
+    .card { background: rgba(30, 41, 59, 0.9); border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 16px; padding: 32px; max-width: 500px; width: 100%; backdrop-filter: blur(12px); }
+    h1 { font-size: 1.75rem; font-weight: 700; margin-bottom: 8px; background: linear-gradient(90deg, #06b6d4, #a855f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .subtitle { color: #94a3b8; margin-bottom: 24px; font-size: 0.95rem; }
+    .status { display: flex; align-items: center; gap: 12px; padding: 16px; border-radius: 10px; margin-bottom: 20px; background: ${isHealthy ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)'}; border: 1px solid ${isHealthy ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: ${isHealthy ? '#10b981' : '#ef4444'}; animation: ${isHealthy ? 'pulse 2s infinite' : 'none'}; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    .status-text { font-weight: 600; color: ${isHealthy ? '#10b981' : '#ef4444'}; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 24px; }
+    .item { background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(148, 163, 184, 0.15); border-radius: 10px; padding: 14px; }
+    .item-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; margin-bottom: 4px; }
+    .item-value { font-family: 'SF Mono', Monaco, monospace; font-size: 0.85rem; color: #e2e8f0; }
+    .links { display: flex; flex-wrap: wrap; gap: 10px; }
+    .btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; border-radius: 8px; font-size: 0.85rem; font-weight: 500; text-decoration: none; color: #0f172a; background: linear-gradient(90deg, #06b6d4, #a855f7); transition: transform 0.15s, box-shadow 0.15s; }
+    .btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(168, 85, 247, 0.4); }
+    .btn.secondary { background: rgba(148, 163, 184, 0.15); color: #e2e8f0; border: 1px solid rgba(148, 163, 184, 0.2); }
+    .btn.secondary:hover { background: rgba(148, 163, 184, 0.25); }
+    .version { margin-top: 20px; text-align: center; font-size: 0.7rem; color: #475569; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>SultiAI Server</h1>
+    <p class="subtitle">Bisaya Learning Platform — API Server</p>
+    <div class="status">
+      <span class="dot"></span>
+      <span class="status-text">${isHealthy ? 'Server Healthy' : 'Server Degraded'}</span>
+    </div>
+    <div class="grid">
+      <div class="item"><div class="item-label">Mode</div><div class="item-value">${groqConfigured ? 'API (Groq)' : 'No LLM'}</div></div>
+      <div class="item"><div class="item-label">Database</div><div class="item-value">${health.database.dialect} (${health.database.status})</div></div>
+      <div class="item"><div class="item-label">Uptime</div><div class="item-value">${Math.floor(process.uptime())}s</div></div>
+      <div class="item"><div class="item-label">Environment</div><div class="item-value">${env.NODE_ENV}</div></div>
+    </div>
+    <div class="links">
+      <a class="btn" href="/api/health">Health Check (JSON)</a>
+      <a class="btn secondary" href="/api/docs" target="_blank">API Docs</a>
+    </div>
+    <div class="version">v${require('../package.json').version} • ${new Date().toISOString()}</div>
+  </div>
+</body>
+</html>`;
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+});
+
 app.get('/api/health', async (_req, res) => {
   const health: Record<string, any> = {
     status: 'ok',
@@ -242,9 +330,13 @@ async function start() {
     }
 
     app.listen(env.PORT, '0.0.0.0', () => {
-      logger.info(`Server running on http://localhost:${env.PORT}`);
+      const baseUrl = `http://localhost:${env.PORT}`;
+      logger.info(`Server running on ${baseUrl}`);
       logger.info(`Mode: ${isGroqConfigured() ? 'API (Groq)' : 'No LLM available'}`);
       logger.info(`Environment: ${env.NODE_ENV}`);
+      logger.info(`Health check: ${baseUrl}/api/health`);
+      logger.info(`Dashboard: ${baseUrl}/`);
+      logger.info('Ready to accept connections');
     });
   } catch (err) {
     logger.error('Failed to start server', { error: (err as Error).message });

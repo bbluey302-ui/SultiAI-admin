@@ -55,7 +55,10 @@
     "format:check": "prettier --check .",
     "prepare": "husky",
     "db:push": "supabase db push --linked",
-    "functions:deploy": "supabase functions deploy ai agent-token --project-ref pptanwtuybivlqeyntwh"
+    "db:status": "supabase migration list --linked",
+    "functions:deploy": "supabase functions deploy ai agent-token --project-ref pptanwtuybivlqeyntwh",
+    "functions:list": "supabase functions list --project-ref pptanwtuybivlqeyntwh",
+    "verify:rls": "node scripts/verify-rls/verify.mjs"
   },
   "private": true,
   "devDependencies": {

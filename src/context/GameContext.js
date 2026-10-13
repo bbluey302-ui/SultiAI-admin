@@ -1,5 +1,6 @@
 import React, { createContext, useState, useEffect, useContext } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Crypto from 'expo-crypto';
 import { api } from '../services/api';
 import { useOfflineSync } from '../hooks/useOfflineSync';
 import { getLevel, getNumericLevel, DAILY_GOAL_DEFAULT, ACHIEVEMENTS, checkAchievementCondition } from '../constants';
@@ -14,6 +15,18 @@ const DAILY_GOAL_KEY = 'sultiai_daily_goal';
 const BADGES_KEY = 'sultiai_badges';
 const ACHIEVEMENTS_KEY = 'sultiai_achievements';
 const LAST_ACTIVE_KEY = 'sultiai_last_active';
+
+/**
+ * One id per XP event, minted when the event happens rather than when it is
+ * replayed.
+ *
+ * `public.award_xp` credits exactly once per (user_id, idempotency_key), so this
+ * is what makes an offline queue entry safe to replay: the retry carries the
+ * original key and is recognised as the same event.
+ */
+function newXpEventKey(source) {
+  return `xp:${source}:${Crypto.randomUUID()}`;
+}
 
 export function GameProvider({ children }) {
   const [xp, setXp] = useState(0);
@@ -114,7 +127,22 @@ export function GameProvider({ children }) {
     setLastActive(today);
     await AsyncStorage.setItem(LAST_ACTIVE_KEY, today);
     checkAchievements({ xp: newXp, source });
-    syncToServer({ xp: newXp });
+
+    // The local AsyncStorage value above is a deliberate offline mirror: it is
+    // what makes the XP bar move instantly with no network. It is NOT the
+    // balance of record.
+    //
+    // This used to push the absolute total (`syncToServer({ xp: newXp })`), which
+    // made the device authoritative over `learner_profiles.total_xp` - any client
+    // could assert any balance. The server now credits the DELTA inside one
+    // transaction, and the key minted here makes a replay after the app was
+    // closed credit exactly once.
+    syncToServer({
+      xp_delta: amount,
+      source,
+      idempotency_key: newXpEventKey(source),
+    });
+
     if (newLevel > oldLevel) {
       setLevelUpInfo({ oldLevel, newLevel, xpGained: amount });
     }

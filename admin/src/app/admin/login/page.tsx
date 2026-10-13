@@ -44,7 +44,7 @@ export default function AdminLoginPage() {
       setError(
         err instanceof Error
           ? err.message
-          : 'Failed to sign in. Check your credentials and ensure the server is running.'
+          : 'Failed to sign in. Check your credentials and try again.'
       );
       setBusy(false);
     }

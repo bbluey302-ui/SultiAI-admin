@@ -23,12 +23,14 @@ const getServerHydrated = () => false;
 const nav: { href: string; label: string; icon: Icon }[] = [
   { href: '/admin', label: 'Dashboard', icon: GridIcon },
   { href: '/admin/users', label: 'Users', icon: UsersIcon },
+  { href: '/admin/monitor', label: 'DB Monitor', icon: DatabaseIcon },
   { href: '/admin/lessons', label: 'Lessons', icon: BookIcon },
   { href: '/admin/community', label: 'Community', icon: ChatIcon },
   { href: '/admin/ai', label: 'AI Usage', icon: SparkIcon },
   { href: '/admin/xp', label: 'XP & Rewards', icon: BoltIcon },
   { href: '/admin/feedback', label: 'Feedback', icon: InboxIcon },
   { href: '/admin/preservation', label: 'Preservation', icon: ArchiveIcon },
+  { href: '/admin/audit', label: 'Audit Logs', icon: ShieldIcon },
 ];
 
 export default function AdminShell({ children }: { children: ReactNode }) {
@@ -286,6 +288,16 @@ function UsersIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+function DatabaseIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base(props)}>
+      <ellipse cx="12" cy="5" rx="8" ry="2.75" />
+      <path d="M4 5v14c0 1.5 3.6 2.75 8 2.75s8-1.25 8-2.75V5" />
+      <path d="M4 12c0 1.5 3.6 2.75 8 2.75s8-1.25 8-2.75" />
+    </svg>
+  );
+}
+
 function BookIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg {...base(props)}>
@@ -335,6 +347,15 @@ function ArchiveIcon(props: SVGProps<SVGSVGElement>) {
       <rect x="3" y="4" width="18" height="4" rx="1" />
       <path d="M5 8v11a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8" />
       <path d="M10 12h4" />
+    </svg>
+  );
+}
+
+function ShieldIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base(props)}>
+      <path d="M12 22s8-3.6 8-10V5.5L12 2 4 5.5V12c0 6.4 8 10 8 10z" />
+      <path d="M9 11.5l2 2 4-4.5" />
     </svg>
   );
 }

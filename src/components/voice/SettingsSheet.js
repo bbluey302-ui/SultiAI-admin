@@ -45,10 +45,10 @@ export default function SettingsSheet({
   const voice = useVoicePalette();
   const styles = useMemo(() => createStyles(voice), [voice]);
   const CHARACTERS = [
-    { id: 'blessica', name: 'Blessica', desc: 'Warm, professional', accent: 'Tagalog \u00b7 female' },
-    { id: 'angel', name: 'Angel', desc: 'Clear, patient', accent: 'Tagalog \u00b7 male' },
-    { id: 'sultan', name: 'Sultan', desc: 'Scholarly, authoritative', accent: 'English w/ Filipino accent \u00b7 male' },
-    { id: 'lola', name: 'Lola', desc: 'Gentle, wise, slow', accent: 'English w/ Filipino accent \u00b7 female' },
+    { id: 'blessica', name: 'Blessica', desc: 'Friendly and approachable', accent: 'Warm female' },
+    { id: 'angel', name: 'Angel', desc: 'Patient and supportive', accent: 'Clear male' },
+    { id: 'sultan', name: 'Sultan', desc: 'Confident and culturally grounded', accent: 'Authoritative male' },
+    { id: 'lola', name: 'Lola', desc: 'Wise and encouraging', accent: 'Gentle female' },
   ];
 
   if (!visible) return null;
@@ -84,7 +84,7 @@ export default function SettingsSheet({
         </View>
 
         <Row
-          icon="vibrate-outline"
+          icon="hand-left-outline"
           title="Haptic feedback"
           subtitle="Subtle vibration on mic & speech events"
           value={haptics}
